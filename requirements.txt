@@ -1,3 +1,2 @@
-requests
-flask
+aiohttp==3.9.3
 aiogram==2.25.1
