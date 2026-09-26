@@ -28,7 +28,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Firebase Extractor Bot is active and running 24x7 with Ultimate Parser!"
+    return "Firebase Extractor Bot is active and running 24x7 with Ultimate APK Scanner!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
@@ -62,7 +62,7 @@ def answer_callback(session, token, callback_query_id, text=""):
     except Exception:
         pass
 
-# --- ULTIMATE LINK PARSER (Handles share, s, m, zeniths & Double Base64) ---
+# --- ULTIMATE LINK PARSER ---
 def parse_links_bulk(text):
     lines = text.strip().split('\n')
     parsed_results = []
@@ -72,7 +72,6 @@ def parse_links_bulk(text):
         if not line or line.startswith("#"):
             continue
 
-        # Check for any parameter containing base64 data (?share=, ?s=, ?m=, ?zeniths=, etc.)
         param_match = re.search(r'[?&](?:share|s|m|zeniths)=([A-Za-z0-9+/=_-]+)', line)
         if param_match:
             try:
@@ -81,7 +80,6 @@ def parse_links_bulk(text):
                 decoded_bytes = base64.b64decode(raw)
                 decoded = decoded_bytes.decode('utf-8', errors='ignore')
                 
-                # Double decoding check (Agar decode karne ke baad bhi base64 ya text ho)
                 if not decoded.startswith(('{', '[')) and re.match(r'^[A-Za-z0-9+/=]+$', decoded.strip()):
                     try:
                         decoded = base64.b64decode(decoded.strip()).decode('utf-8', errors='ignore')
@@ -91,7 +89,6 @@ def parse_links_bulk(text):
                 try:
                     data = json.loads(decoded)
                 except:
-                    # Agar JSON direct load na ho, toh regex se Firebase URL nikal lo
                     urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com', decoded)
                     for u in urls:
                         pm = re.search(r'https://([^.]+)', u)
@@ -99,7 +96,6 @@ def parse_links_bulk(text):
                         parsed_results.append((u.rstrip('/'), "dummy", p_name))
                     continue
 
-                # Agar JSON ek list hai
                 if isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict):
@@ -113,7 +109,6 @@ def parse_links_bulk(text):
                                 parsed_results.append((p_url, p_key, p_name))
                     continue
                 
-                # Agar JSON ek dictionary hai
                 elif isinstance(data, dict):
                     if "panels" in data:
                         for panel in data["panels"]:
@@ -138,7 +133,6 @@ def parse_links_bulk(text):
             except Exception as e:
                 print(f"Parser Decode Error: {e}")
 
-        # Separator format (URL|||KEY)
         if '|||' in line:
             parts = line.split('|||')
             url = parts[0].strip()
@@ -152,7 +146,6 @@ def parse_links_bulk(text):
                 parsed_results.append((url, key, p_name))
                 continue
 
-        # Plain URL fallback
         url = line.strip()
         if url.startswith("http") or "firebaseio.com" in url:
             url = url.rstrip('/')
@@ -162,23 +155,32 @@ def parse_links_bulk(text):
 
     return parsed_results
 
-# --- APK PARSER ---
+# --- ADVANCED DEEP APK PARSER ---
 def extract_firebase_from_apk(apk_path):
     extracted_urls = []
     try:
         with zipfile.ZipFile(apk_path, 'r') as z:
             for filename in z.namelist():
-                if filename.endswith('.dex') or filename.endswith('.json') or 'res/raw' in filename:
+                # Sabhi potential files ko scan karenge (assets, res, json, dex, xml, etc.)
+                if any(ext in filename.lower() for ext in ['.dex', '.json', '.xml', '.txt', 'res/', 'assets/']):
                     try:
                         content = z.read(filename)
+                        # Multiple pattern matching for Firebase Realtime Database and Firestore
                         urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com', str(content))
                         for u in urls:
                             if u not in extracted_urls:
-                                extracted_urls.append(u)
+                                extracted_urls.append(u.strip('/'))
+                                
+                        # Agar project_id ya databaseURL keys ke roop mein ho
+                        project_matches = re.findall(r'([a-zA-Z0-9_-]+)-default-rtdb', str(content))
+                        for p in project_matches:
+                            constructed_url = f"https://{p}-default-rtdb.firebaseio.com"
+                            if constructed_url not in extracted_urls:
+                                extracted_urls.append(constructed_url)
                     except:
                         continue
     except Exception as e:
-        print(f"APK Parse Error: {e}")
+        print(f"Deep APK Parse Error: {e}")
     return extracted_urls
 
 # --- FIREBASE CHECKER ---
@@ -245,7 +247,7 @@ def check_firebase(url, key):
 # --- TELEGRAM LISTENER ---
 def telegram_listener(token, session):
     offset = 0
-    print("[Bot] Ultimate Firebase Extractor started.")
+    print("[Bot] Ultimate Deep Extractor Bot started.")
     
     waiting_for_panel = {}
 
@@ -325,7 +327,7 @@ def telegram_listener(token, session):
                         elif document:
                             file_name = document.get("file_name", "")
                             if file_name.endswith(".apk"):
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "📥 APK file mil gayi hai, scan ki ja rahi hai..."})
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "📥 APK file mil gayi hai, deep scan ki ja rahi hai..."})
                                 file_id = document.get("file_id")
                                 
                                 file_info = session.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}").json()
@@ -355,7 +357,7 @@ def telegram_listener(token, session):
                                                      f"🟢 Online Connections: `{res['online_devices']}`")
                                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"})
                                     else:
-                                        session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ Is APK ke andar koi valid Firebase URL nahi mila."})
+                                        session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ Is APK ke andar koi valid Firebase URL nahi mila (Ho sakta hai app obfuscated ho)."})
                             else:
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ Kripya sirf `.apk` file hi bhejiye."})
 
@@ -399,7 +401,7 @@ def telegram_listener(token, session):
 
 if __name__ == "__main__":
     print("="*50)
-    print("  Ultimate Firebase Extractor Bot Running...")
+    print("  Ultimate Deep Extractor Bot Running...")
     print("="*50)
     session = requests.Session()
     threading.Thread(target=telegram_listener, args=(BOT_TOKEN, session), daemon=True).start()
