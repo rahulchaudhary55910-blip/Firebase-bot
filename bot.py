@@ -35,7 +35,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Firebase Extractor Bot with Strict Subscription Enforcement is active!"
+    return "Firebase Extractor Bot with Universal Panel & APK Parser is active!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
@@ -147,6 +147,7 @@ def answer_callback(session, token, callback_query_id, text=""):
     except Exception:
         pass
 
+# --- UNIVERSAL ADVANCED LINK & QUERY PARSER ---
 def parse_links_bulk(text):
     lines = text.strip().split('\n')
     parsed_results = []
@@ -154,27 +155,35 @@ def parse_links_bulk(text):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
-        param_match = re.search(r'[?&](?:share|s|m|zeniths)=([A-Za-z0-9+/=_-]+)', line)
-        if param_match:
+        
+        # 1. Extract any parameter value (?share=, ?s=, ?m=, ?zeniths=, etc.)
+        param_matches = re.findall(r'[?&][a-zA-Z0-9_-]+=([A-Za-z0-9+/=_-]+)', line)
+        
+        decoded_texts = [line] # Original line bhi check karenge
+        for match in param_matches:
             try:
-                raw = param_match.group(1).replace('-', '+').replace('_', '/')
+                raw = match.replace('-', '+').replace('_', '/')
                 raw += '=' * (-len(raw) % 4)
                 decoded_bytes = base64.b64decode(raw)
                 decoded = decoded_bytes.decode('utf-8', errors='ignore')
-                if not decoded.startswith(('{', '[')) and re.match(r'^[A-Za-z0-9+/=]+$', decoded.strip()):
+                decoded_texts.append(decoded)
+                
+                # Double decode check
+                if not decoded.startswith(('{', '[', 'http')) and re.match(r'^[A-Za-z0-9+/=]+$', decoded.strip()):
                     try:
-                        decoded = base64.b64decode(decoded.strip()).decode('utf-8', errors='ignore')
+                        d2 = base64.b64decode(decoded.strip()).decode('utf-8', errors='ignore')
+                        decoded_texts.append(d2)
                     except:
                         pass
-                try:
-                    data = json.loads(decoded)
-                except:
-                    urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com', decoded)
-                    for u in urls:
-                        pm = re.search(r'https://([^.]+)', u)
-                        p_name = pm.group(1) if pm else "unknown"
-                        parsed_results.append((u.rstrip('/'), "dummy", p_name))
-                    continue
+            except:
+                pass
+
+        # 2. Search for Firebase URLs across all decoded text variations and raw line
+        found_any = False
+        for text_block in decoded_texts:
+            # Try JSON parsing first if it looks like json
+            try:
+                data = json.loads(text_block)
                 if isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict):
@@ -185,35 +194,43 @@ def parse_links_bulk(text):
                                     p_url = "https://" + p_url
                                 pm = re.search(r'https://([^.]+)', p_url)
                                 p_name = pm.group(1) if pm else "unknown"
-                                parsed_results.append((p_url, p_key, p_name))
+                                if (p_url, p_key, p_name) not in parsed_results:
+                                    parsed_results.append((p_url, p_key, p_name))
+                                    found_any = True
                     continue
                 elif isinstance(data, dict):
-                    if "panels" in data:
-                        for panel in data["panels"]:
-                            if isinstance(panel, dict):
-                                p_url = panel.get("url", "").rstrip('/')
-                                p_key = panel.get("key", "dummy") or "dummy"
-                                if p_url:
-                                    if not p_url.startswith("http"):
-                                        p_url = "https://" + p_url
-                                    pm = re.search(r'https://([^.]+)', p_url)
-                                    p_name = pm.group(1) if pm else "unknown"
-                                    parsed_results.append((p_url, p_key, p_name))
+                    p_url = data.get('url', '').rstrip('/')
+                    p_key = data.get('key', 'dummy') or "dummy"
+                    if p_url:
+                        if not p_url.startswith("http"):
+                            p_url = "https://" + p_url
+                        pm = re.search(r'https://([^.]+)', p_url)
+                        p_name = pm.group(1) if pm else "unknown"
+                        if (p_url, p_key, p_name) not in parsed_results:
+                            parsed_results.append((p_url, p_key, p_name))
+                            found_any = True
                         continue
-                    elif "url" in data:
-                        url = data.get('url', '').rstrip('/')
-                        key = data.get('key', 'dummy') or "dummy"
-                        if url:
-                            pm = re.search(r'https://([^.]+)', url)
-                            p_name = pm.group(1) if pm else "unknown"
-                            parsed_results.append((url, key, p_name))
-                            continue
-            except Exception as e:
-                print(f"Parser Decode Error: {e}")
-        if '|||' in line:
-            parts = line.split('|||')
+            except:
+                pass
+
+            # Regex search for Firebase Realtime Database or Firebasedatabase.app URLs
+            urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com|https?://[a-zA-Z0-9.-]+\.firebasedatabase\.app', text_block)
+            for u in urls:
+                u_clean = u.rstrip('/')
+                pm = re.search(r'https://([^.]+)', u_clean)
+                p_name = pm.group(1) if pm else "unknown"
+                if (u_clean, "dummy", p_name) not in parsed_results:
+                    parsed_results.append((u_clean, "dummy", p_name))
+                    found_any = True
+
+        if found_any:
+            continue
+
+        # 3. Separator formats (URL||KEY or URL|||KEY)
+        if '||' in line:
+            parts = re.split(r'\|{2,}', line)
             url = parts[0].strip()
-            key = parts[1].strip() if len(parts) > 1 else "dummy"
+            key = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "dummy"
             if url:
                 url = url.rstrip('/')
                 if not url.startswith("http"):
@@ -222,26 +239,31 @@ def parse_links_bulk(text):
                 p_name = pm.group(1) if pm else "unknown"
                 parsed_results.append((url, key, p_name))
                 continue
-        url = line.strip()
-        if url.startswith("http") or "firebaseio.com" in url:
-            url = url.rstrip('/')
+
+        # 4. Plain URL fallback
+        if "firebaseio.com" in line or "firebasedatabase.app" in line or line.startswith("http"):
+            url = line.rstrip('/')
             pm = re.search(r'https://([^.]+)', url)
             p_name = pm.group(1) if pm else "unknown"
             parsed_results.append((url, "dummy", p_name))
+
     return parsed_results
 
+# --- UNIVERSAL DEEP APK PARSER (Supports 32-bit, 64-bit, All architectures & assets) ---
 def extract_firebase_from_apk(apk_path):
     extracted_urls = []
     try:
         with zipfile.ZipFile(apk_path, 'r') as z:
             for filename in z.namelist():
-                if any(ext in filename.lower() for ext in ['.dex', '.json', '.xml', '.txt', 'res/', 'assets/']):
+                # Scan all files including dex files, native libraries (.so for 32/64 bit), json, xml, assets
+                if any(ext in filename.lower() for ext in ['.dex', '.json', '.xml', '.txt', '.so', 'res/', 'assets/']):
                     try:
                         content = z.read(filename)
-                        urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com', str(content))
+                        urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com|https?://[a-zA-Z0-9.-]+\.firebasedatabase\.app', str(content))
                         for u in urls:
-                            if u not in extracted_urls:
+                            if u.strip('/') not in extracted_urls:
                                 extracted_urls.append(u.strip('/'))
+                                
                         project_matches = re.findall(r'([a-zA-Z0-9_-]+)-default-rtdb', str(content))
                         for p in project_matches:
                             constructed_url = f"https://{p}-default-rtdb.firebaseio.com"
@@ -250,7 +272,7 @@ def extract_firebase_from_apk(apk_path):
                     except:
                         continue
     except Exception as e:
-        print(f"Deep APK Parse Error: {e}")
+        print(f"Universal APK Parse Error: {e}")
     return extracted_urls
 
 def check_firebase(url, key):
@@ -312,7 +334,7 @@ def check_firebase(url, key):
 
 def telegram_listener(token, session):
     offset = 0
-    print("[Bot] Listener with Strict Sub/Credit Check started.")
+    print("[Bot] Universal Listener started.")
     waiting_for_panel = {}
 
     while True:
@@ -682,7 +704,6 @@ def telegram_listener(token, session):
                             
                             parsed_links = parse_links_bulk(text)
                             if parsed_links:
-                                # Strict subscription check for web panels as well
                                 if not is_admin and not user_has_sub:
                                     session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ **Access Denied!**\n\nWeb panel scan karne ke liye aapke paas **Active Unlimited Pass** hona zaroori hai.\n\n💡 Pass lene ke liye `/profile` se credits use karein ya `/redeem <key>` karein!"})
                                     continue
@@ -724,8 +745,9 @@ def telegram_listener(token, session):
 
 if __name__ == "__main__":
     print("="*50)
-    print("  Bot Running with Strict Subscription & Limits Enforcement...")
+    print("  Bot Running with Universal Parser & APK Support...")
     print("="*50)
     session = requests.Session()
     threading.Thread(target=telegram_listener, args=(BOT_TOKEN, session), daemon=True).start()
     run_flask()
+                 
