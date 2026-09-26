@@ -432,7 +432,7 @@ def telegram_listener(token, session):
                                 "Yeh bot Web Panel links ya APK files se Firebase Database URLs aur active connections extract karta hai!\n\n"
                                 "🛠 **Ise Kaise Use Karein:**\n"
                                 "• **Scan:** Apna link ya APK bhej kar scan karein.\n"
-                                "• **Access:** Normal users ke liye active subscription ya 10 credits zaroori hain. Dosto ko invite karke ya `/redeem` key se pass lein."
+                                "• **Access:** Normal users ke liye active subscription hona zaroori hai. Dosto ko invite karke ya `/redeem` key se pass lein."
                             )
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": about_text, "parse_mode": "Markdown"})
                             continue
@@ -682,9 +682,9 @@ def telegram_listener(token, session):
                             
                             parsed_links = parse_links_bulk(text)
                             if parsed_links:
-                                # Limit check for normal users without active sub (Max 5 panels)
-                                if not is_admin and not user_has_sub and len(parsed_links) > 5:
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"⚠️ **Limit Exceeded!** Aap bina subscription ke maximum **5 panels** ek baar mein scan kar sakte hain (Aapne {len(parsed_links)} bheje hain).\n\n💡 Unlimited access ke liye `/profile` se pass kharidein ya `/redeem` use karein!"})
+                                # Strict subscription check for web panels as well
+                                if not is_admin and not user_has_sub:
+                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ **Access Denied!**\n\nWeb panel scan karne ke liye aapke paas **Active Unlimited Pass** hona zaroori hai.\n\n💡 Pass lene ke liye `/profile` se credits use karein ya `/redeem <key>` karein!"})
                                     continue
 
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🔍 Total {len(parsed_links)} panel(s) parse ho gaye hain, Firebase check ho raha hai..."})
