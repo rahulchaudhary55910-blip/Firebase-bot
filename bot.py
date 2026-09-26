@@ -28,7 +28,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Firebase Extractor Bot is active and running 24x7 with Limits & Online Stats!"
+    return "Firebase Extractor Bot is active and running 24x7 with Ultimate Parser!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
@@ -42,7 +42,6 @@ def self_ping():
             pass
         time.sleep(300)
 
-# --- TELEGRAM HELPER FUNCTIONS ---
 def send_keyboard_message(session, token, chat_id, text, inline_keyboard):
     try:
         r = session.post(f"https://api.telegram.org/bot{token}/sendMessage",
@@ -63,11 +62,8 @@ def answer_callback(session, token, callback_query_id, text=""):
     except Exception:
         pass
 
-# --- LINK PARSER & BASE64 LOGIC ---
+# --- ULTIMATE LINK PARSER (Handles share, s, m, zeniths & Double Base64) ---
 def parse_links_bulk(text):
-    """
-    Ek sath multiple links parse karne ke liye (Bulk Support)
-    """
     lines = text.strip().split('\n')
     parsed_results = []
     
@@ -76,58 +72,93 @@ def parse_links_bulk(text):
         if not line or line.startswith("#"):
             continue
 
-        url, key, panel_name = None, None, "unknown"
-
-        if "?share=" in line or "&share=" in line:
-            m = re.search(r'[?&]share=([A-Za-z0-9+/=_-]+)', line)
-            if m:
-                try:
-                    raw = m.group(1).replace('-', '+').replace('_', '/')
-                    raw += '=' * (-len(raw) % 4)
-                    decoded = base64.b64decode(raw).decode('utf-8')
-                    data = json.loads(decoded)
-                    url = data.get('url', '').rstrip('/')
-                    key = data.get('key', 'dummy') or "dummy"
-                    if url:
-                        pm = re.search(r'https://([^.]+)', url)
-                        if pm:
-                            panel_name = pm.group(1)
-                except:
-                    pass
-        elif '?s=' in line or '&s=' in line:
-            m = re.search(r'[?&]s=([A-Za-z0-9+/=]+)', line)
-            if m:
-                try:
-                    raw = m.group(1) + '=' * (-len(m.group(1)) % 4)
-                    decoded = base64.b64decode(raw).decode('utf-8')
+        # Check for any parameter containing base64 data (?share=, ?s=, ?m=, ?zeniths=, etc.)
+        param_match = re.search(r'[?&](?:share|s|m|zeniths)=([A-Za-z0-9+/=_-]+)', line)
+        if param_match:
+            try:
+                raw = param_match.group(1).replace('-', '+').replace('_', '/')
+                raw += '=' * (-len(raw) % 4)
+                decoded_bytes = base64.b64decode(raw)
+                decoded = decoded_bytes.decode('utf-8', errors='ignore')
+                
+                # Double decoding check (Agar decode karne ke baad bhi base64 ya text ho)
+                if not decoded.startswith(('{', '[')) and re.match(r'^[A-Za-z0-9+/=]+$', decoded.strip()):
                     try:
-                        data = json.loads(decoded)
-                        if isinstance(data, dict) and "url" in data:
-                            url = data.get('url', '').rstrip('/')
-                            key = data.get('key', 'dummy') or "dummy"
+                        decoded = base64.b64decode(decoded.strip()).decode('utf-8', errors='ignore')
                     except:
-                        parts = decoded.split('|||')
-                        if len(parts) >= 2:
-                            url, key = parts[0].strip(), parts[1].strip()
+                        pass
+
+                try:
+                    data = json.loads(decoded)
                 except:
-                    pass
-        elif '|||' in line:
+                    # Agar JSON direct load na ho, toh regex se Firebase URL nikal lo
+                    urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com', decoded)
+                    for u in urls:
+                        pm = re.search(r'https://([^.]+)', u)
+                        p_name = pm.group(1) if pm else "unknown"
+                        parsed_results.append((u.rstrip('/'), "dummy", p_name))
+                    continue
+
+                # Agar JSON ek list hai
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            p_url = item.get('url', '').rstrip('/')
+                            p_key = item.get('key', 'dummy') or "dummy"
+                            if p_url:
+                                if not p_url.startswith("http"):
+                                    p_url = "https://" + p_url
+                                pm = re.search(r'https://([^.]+)', p_url)
+                                p_name = pm.group(1) if pm else "unknown"
+                                parsed_results.append((p_url, p_key, p_name))
+                    continue
+                
+                # Agar JSON ek dictionary hai
+                elif isinstance(data, dict):
+                    if "panels" in data:
+                        for panel in data["panels"]:
+                            if isinstance(panel, dict):
+                                p_url = panel.get("url", "").rstrip('/')
+                                p_key = panel.get("key", "dummy") or "dummy"
+                                if p_url:
+                                    if not p_url.startswith("http"):
+                                        p_url = "https://" + p_url
+                                    pm = re.search(r'https://([^.]+)', p_url)
+                                    p_name = pm.group(1) if pm else "unknown"
+                                    parsed_results.append((p_url, p_key, p_name))
+                        continue
+                    elif "url" in data:
+                        url = data.get('url', '').rstrip('/')
+                        key = data.get('key', 'dummy') or "dummy"
+                        if url:
+                            pm = re.search(r'https://([^.]+)', url)
+                            p_name = pm.group(1) if pm else "unknown"
+                            parsed_results.append((url, key, p_name))
+                            continue
+            except Exception as e:
+                print(f"Parser Decode Error: {e}")
+
+        # Separator format (URL|||KEY)
+        if '|||' in line:
             parts = line.split('|||')
             url = parts[0].strip()
             key = parts[1].strip() if len(parts) > 1 else "dummy"
-        else:
-            url = line.strip()
-            key = "dummy"
-
-        if url:
-            url = url.rstrip('/')
-            if not url.startswith("http"):
-                url = "https://" + url
-            if panel_name == "unknown":
+            if url:
+                url = url.rstrip('/')
+                if not url.startswith("http"):
+                    url = "https://" + url
                 pm = re.search(r'https://([^.]+)', url)
-                if pm:
-                    panel_name = pm.group(1)
-            parsed_results.append((url, key, panel_name))
+                p_name = pm.group(1) if pm else "unknown"
+                parsed_results.append((url, key, p_name))
+                continue
+
+        # Plain URL fallback
+        url = line.strip()
+        if url.startswith("http") or "firebaseio.com" in url:
+            url = url.rstrip('/')
+            pm = re.search(r'https://([^.]+)', url)
+            p_name = pm.group(1) if pm else "unknown"
+            parsed_results.append((url, "dummy", p_name))
 
     return parsed_results
 
@@ -150,7 +181,7 @@ def extract_firebase_from_apk(apk_path):
         print(f"APK Parse Error: {e}")
     return extracted_urls
 
-# --- FIREBASE CHECKER WITH ONLINE CONNECTIONS ---
+# --- FIREBASE CHECKER ---
 def check_firebase(url, key):
     result = {
         "url": url,
@@ -177,7 +208,6 @@ def check_firebase(url, key):
             if data and isinstance(data, dict):
                 result["status"] = "live"
                 result["total_devices"] = len(data)
-                # Count online devices based on active status field
                 result["online_devices"] = sum(
                     1 for d in data.values() 
                     if isinstance(d, dict) and (d.get("status") or d.get("online") or d.get("lastSeen"))
@@ -215,7 +245,7 @@ def check_firebase(url, key):
 # --- TELEGRAM LISTENER ---
 def telegram_listener(token, session):
     offset = 0
-    print("[Bot] Firebase Extractor with Limits & Connection Stats started.")
+    print("[Bot] Ultimate Firebase Extractor started.")
     
     waiting_for_panel = {}
 
@@ -244,7 +274,7 @@ def telegram_listener(token, session):
                                 answer_callback(session, token, cq_id, "Web Panel mode activated!")
                                 waiting_for_panel[chat_id] = True
                                 limit_text = " (Unlimited Access 👑)" if chat_id == str(ADMIN_CHAT_ID) else " (Limit: Max 5 Panels)"
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🌐 Kripya apna **Web Panel Link(s)** ya Base64 text yahan bhejiye{limit_text}:"})
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🌐 Kripya apna **Web Panel Link(s)** ya text yahan bhejiye{limit_text}:"})
                             continue
 
                         message = update.get("message")
@@ -292,7 +322,6 @@ def telegram_listener(token, session):
                             is_admin = "Yes (👑 Admin)" if chat_id == str(ADMIN_CHAT_ID) else "No (Normal User — Limit: 5 panels)"
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"👤 Your Chat ID: `{chat_id}`\n👑 Admin Status: {is_admin}", "parse_mode": "Markdown"})
                         
-                        # --- HANDLING APK DOCUMENT UPLOAD ---
                         elif document:
                             file_name = document.get("file_name", "")
                             if file_name.endswith(".apk"):
@@ -330,17 +359,15 @@ def telegram_listener(token, session):
                             else:
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ Kripya sirf `.apk` file hi bhejiye."})
 
-                        # --- HANDLING WEB PANEL LINKS (WITH LIMIT CHECK) ---
                         elif text:
                             if chat_id in waiting_for_panel and waiting_for_panel[chat_id]:
                                 waiting_for_panel[chat_id] = False
                             
                             parsed_links = parse_links_bulk(text)
                             if parsed_links:
-                                # Apply Limit: Normal users can only scan max 5 panels at once, Admin has unlimited access
                                 is_admin = (chat_id == str(ADMIN_CHAT_ID))
                                 if not is_admin and len(parsed_links) > 5:
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"⚠️ **Limit Exceeded!** Aap ek baar mein maximum **5 panels** scan kar sakte hain (Aapne {len(parsed_links)} bheje hain). Kripya kam links bhejiye."})
+                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"⚠️ **Limit Exceeded!** Aap ek baar mein maximum **5 panels** scan kar sakte hain (Aapne {len(parsed_links)} bheje hain)."})
                                     continue
 
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🔍 Total {len(parsed_links)} panel(s) parse ho gaye hain, Firebase & Online connections check ho rahe hain..."})
@@ -372,7 +399,7 @@ def telegram_listener(token, session):
 
 if __name__ == "__main__":
     print("="*50)
-    print("  Firebase Extractor Bot Running with Admin & Limits...")
+    print("  Ultimate Firebase Extractor Bot Running...")
     print("="*50)
     session = requests.Session()
     threading.Thread(target=telegram_listener, args=(BOT_TOKEN, session), daemon=True).start()
