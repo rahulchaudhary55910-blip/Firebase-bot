@@ -35,7 +35,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Firebase Extractor Bot with Rules & About is active!"
+    return "Firebase Extractor Bot with Strict Subscription Enforcement is active!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
@@ -312,7 +312,7 @@ def check_firebase(url, key):
 
 def telegram_listener(token, session):
     offset = 0
-    print("[Bot] Listener with Rules & About started.")
+    print("[Bot] Listener with Strict Sub/Credit Check started.")
     waiting_for_panel = {}
 
     while True:
@@ -415,27 +415,24 @@ def telegram_listener(token, session):
                                 u_data["left_channel_penalty"] = True
                                 update_user_data(chat_id, u_data)
 
-                        # --- NEW COMMAND: /rules ---
                         if text == "/rules":
                             rules_text = (
                                 "📜 **Referral Rules & Guidelines:**\n\n"
                                 f"1️⃣ Jab aap apne referral link se kisi ko invite karte hain, toh jab tak woh user `{CHANNEL_USERNAME}` channel join karke verify nahi karega, tab tak valid refer nahi mana jayega.\n"
                                 "2️⃣ Har ek verified invite par aapko **+5 Credits** milte hain.\n"
                                 "3️⃣ Agar invited user channel leave kar deta hai, toh referrer ke credits mein se **-5 credits** (penalty) cut ho jayenge.\n"
-                                "4️⃣ Ek user sirf ek hi baar referral ke liye count hota hai. Ek baar jo count ho gaya ya leave karke dobara aaya, toh us par dubara credits nahi milenge."
+                                "4️⃣ Ek user sirf ek hi baar referral ke liye count hota hai."
                             )
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": rules_text, "parse_mode": "Markdown"})
                             continue
 
-                        # --- NEW COMMAND: /about ---
                         if text == "/about":
                             about_text = (
                                 "ℹ️ **About Firebase Extractor Bot:**\n\n"
-                                "Yeh bot kisi bhi **Web Panel Link** (Base64/encoded formats jaise `?share=`, `?s=`, `?m=`, `?zeniths=`) ya **APK file** ke andar se chhuphe hue **Firebase Database URLs**, Google API Keys aur active connections ko extract karne ke liye banaya gaya hai!\n\n"
+                                "Yeh bot Web Panel links ya APK files se Firebase Database URLs aur active connections extract karta hai!\n\n"
                                 "🛠 **Ise Kaise Use Karein:**\n"
-                                "• **Web Panel:** Menu se option select karein ya apna link direct bhej dein.\n"
-                                "• **APK Scan:** Seedha koi bhi `.apk` file bot par upload kar dein.\n"
-                                "• **Pass System:** 10 Credits karke 3 din ka unlimited access pass kharidein ya admin dwara di gayi key ko `/redeem` karein."
+                                "• **Scan:** Apna link ya APK bhej kar scan karein.\n"
+                                "• **Access:** Normal users ke liye active subscription ya 10 credits zaroori hain. Dosto ko invite karke ya `/redeem` key se pass lein."
                             )
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": about_text, "parse_mode": "Markdown"})
                             continue
@@ -446,10 +443,10 @@ def telegram_listener(token, session):
                                 if len(parts) >= 3 and parts[1].isdigit() and parts[2].isdigit():
                                     target_id = parts[1]
                                     days = int(parts[2])
-                                    u_data = get_user_data(target_id)
+                                    target_u_data = get_user_data(target_id)
                                     expiry = datetime.now() + timedelta(days=days)
-                                    u_data["sub_expiry"] = expiry.isoformat()
-                                    update_user_data(target_id, u_data)
+                                    target_u_data["sub_expiry"] = expiry.isoformat()
+                                    update_user_data(target_id, target_u_data)
                                     session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"✅ User `{target_id}` ko `{days} din` ka unlimited access de diya gaya hai.", "parse_mode": "Markdown"})
                                     try:
                                         session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": target_id, "text": f"🎉 Admin ne aapko `{days} din` ka unlimited access pass de diya hai!"})
@@ -466,9 +463,9 @@ def telegram_listener(token, session):
                                 parts = text.split(" ")
                                 if len(parts) >= 2 and parts[1].isdigit():
                                     target_id = parts[1]
-                                    u_data = get_user_data(target_id)
-                                    u_data["sub_expiry"] = None
-                                    update_user_data(target_id, u_data)
+                                    target_u_data = get_user_data(target_id)
+                                    target_u_data["sub_expiry"] = None
+                                    update_user_data(target_id, target_u_data)
                                     session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"✅ User `{target_id}` ka subscription hata diya gaya hai.", "parse_mode": "Markdown"})
                                     try:
                                         session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": target_id, "text": "⚠️ Admin ne aapka unlimited subscription hata diya hai."})
@@ -505,8 +502,8 @@ def telegram_listener(token, session):
                                     del keys_data[input_key]
                                     save_json(KEYS_FILE, keys_data)
                                     
-                                    u_data = get_user_data(chat_id)
-                                    current_expiry = u_data.get("sub_expiry")
+                                    target_u_data = get_user_data(chat_id)
+                                    current_expiry = target_u_data.get("sub_expiry")
                                     base_time = datetime.now()
                                     if current_expiry:
                                         try:
@@ -516,8 +513,8 @@ def telegram_listener(token, session):
                                         except:
                                             pass
                                     new_expiry = base_time + timedelta(days=days)
-                                    u_data["sub_expiry"] = new_expiry.isoformat()
-                                    update_user_data(chat_id, u_data)
+                                    target_u_data["sub_expiry"] = new_expiry.isoformat()
+                                    update_user_data(chat_id, target_u_data)
                                     
                                     session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🎉 **Redeem Successful!**\nAapko `{days} Din` ka unlimited access mil gaya hai!", "parse_mode": "Markdown"})
                                 else:
@@ -531,10 +528,10 @@ def telegram_listener(token, session):
                             if len(parts) > 1 and parts[1].startswith("ref_"):
                                 referrer_id = parts[1].replace("ref_", "")
                                 if referrer_id != chat_id:
-                                    u_data = get_user_data(chat_id)
-                                    if not u_data.get("referred_by"):
-                                        u_data["referred_by"] = referrer_id
-                                        update_user_data(chat_id, u_data)
+                                    target_u_data = get_user_data(chat_id)
+                                    if not target_u_data.get("referred_by"):
+                                        target_u_data["referred_by"] = referrer_id
+                                        update_user_data(chat_id, target_u_data)
 
                             if not check_user_channel(session, token, chat_id):
                                 join_text = (
@@ -627,7 +624,15 @@ def telegram_listener(token, session):
                         elif text == "/stats":
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "📊 Bot Status: Online & Active."})
                         
-                        elif document:
+                        # --- STRICT ACCESS CHECK FOR SCANNING (APKs & WEB PANELS) ---
+                        is_admin = (chat_id == str(ADMIN_CHAT_ID))
+                        user_has_sub = has_active_sub(chat_id)
+
+                        if document:
+                            if not is_admin and not user_has_sub:
+                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ **Access Denied!**\n\nAPK scan karne ke liye aapke paas **Active Unlimited Pass** hona zaroori hai.\n\n💡 Pass lene ke liye `/profile` check karein ya `/redeem <key>` use karein!"})
+                                continue
+
                             file_name = document.get("file_name", "")
                             if file_name.endswith(".apk"):
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "📥 APK file mil gayi hai, deep scan ki ja rahi hai..."})
@@ -677,9 +682,9 @@ def telegram_listener(token, session):
                             
                             parsed_links = parse_links_bulk(text)
                             if parsed_links:
-                                is_admin = (chat_id == str(ADMIN_CHAT_ID))
-                                if not is_admin and not has_active_sub(chat_id) and len(parsed_links) > 5:
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"⚠️ **Limit Exceeded!** Aap normal user hain aur ek baar mein maximum **5 panels** scan kar sakte hain (Aapne {len(parsed_links)} bheje hain).\n\n💡 Unlimited access ke liye `/profile` se pass kharidein ya `/redeem` use karein!"})
+                                # Limit check for normal users without active sub (Max 5 panels)
+                                if not is_admin and not user_has_sub and len(parsed_links) > 5:
+                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"⚠️ **Limit Exceeded!** Aap bina subscription ke maximum **5 panels** ek baar mein scan kar sakte hain (Aapne {len(parsed_links)} bheje hain).\n\n💡 Unlimited access ke liye `/profile` se pass kharidein ya `/redeem` use karein!"})
                                     continue
 
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"🔍 Total {len(parsed_links)} panel(s) parse ho gaye hain, Firebase check ho raha hai..."})
@@ -719,7 +724,7 @@ def telegram_listener(token, session):
 
 if __name__ == "__main__":
     print("="*50)
-    print("  Bot Running with Rules & About Commands Added...")
+    print("  Bot Running with Strict Subscription & Limits Enforcement...")
     print("="*50)
     session = requests.Session()
     threading.Thread(target=telegram_listener, args=(BOT_TOKEN, session), daemon=True).start()
