@@ -41,7 +41,7 @@ app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Firebase Extractor & Free Tubesave Checker Bot is active!"
+    return "Firebase Extractor & Manual Number Checker Bot is active!"
 
 def run_flask():
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
@@ -274,6 +274,37 @@ def extract_firebase_from_apk(apk_path):
         print(f"Universal APK Parse Error: {e}")
     return extracted_urls
 
+# --- DEEP RECURSIVE NUMBER EXTRACTOR FROM FIREBASE ---
+def extract_numbers_recursive(data):
+    all_nums = set()
+    online_nums = set()
+    
+    def search(node):
+        if isinstance(node, dict):
+            # Check if this node represents a device/user entry
+            is_online = bool(node.get("status") or node.get("online") or node.get("lastSeen"))
+            for k, v in node.items():
+                if isinstance(v, (str, int)):
+                    val_str = str(v)
+                    # Check if looks like phone number (10 to 15 digits)
+                    clean_v = re.sub(r'\D', '', val_str)
+                    if 10 <= len(clean_v) <= 15:
+                        all_nums.add(clean_v)
+                        if is_online:
+                            online_nums.add(clean_v)
+                search(v)
+        elif isinstance(node, list):
+            for item in node:
+                search(item)
+        elif isinstance(node, (str, int)):
+            val_str = str(node)
+            clean_v = re.sub(r'\D', '', val_str)
+            if 10 <= len(clean_v) <= 15:
+                all_nums.add(clean_v)
+
+    search(data)
+    return list(all_nums), list(online_nums)
+
 def check_firebase_and_extract_numbers(url, key):
     clients_url = f"{url}/clients.json"
     if key and key != "dummy":
@@ -282,42 +313,25 @@ def check_firebase_and_extract_numbers(url, key):
         res = requests.get(clients_url, timeout=TIMEOUT)
         if res.status_code == 200:
             data = res.json()
-            if data and isinstance(data, dict):
-                online_numbers = []
-                all_numbers = []
-                for d_id, d_val in data.items():
-                    if isinstance(d_val, dict):
-                        phone = None
-                        for k, v in d_val.items():
-                            if any(sub in k.lower() for sub in ['phone', 'mobile', 'num', 'contact']):
-                                phone = str(v)
-                                break
-                        if not phone and len(d_id) >= 10 and d_id.isdigit():
-                            phone = d_id
-                        
-                        if phone:
-                            clean_p = re.sub(r'\D', '', phone)
-                            if len(clean_p) >= 10:
-                                all_numbers.append(clean_p)
-                                is_online = bool(d_val.get("status") or d_val.get("online") or d_val.get("lastSeen"))
-                                if is_online:
-                                    online_numbers.append(clean_p)
-                return "live", all_numbers, online_numbers
+            if data:
+                all_nums, online_nums = extract_numbers_recursive(data)
+                # If specific keys like device IDs are numbers
+                if isinstance(data, dict):
+                    for d_id in data.keys():
+                        clean_id = re.sub(r'\D', '', d_id)
+                        if 10 <= len(clean_id) <= 15:
+                            if clean_id not in all_nums:
+                                all_nums.append(clean_id)
+                return "live", all_nums, online_nums
         elif res.status_code == 401:
             if key and key != "dummy":
                 try:
                     res2 = requests.get(f"{url}/clients.json", timeout=TIMEOUT)
                     if res2.status_code == 200:
-                        data = res2.json()
-                        if data and isinstance(data, dict):
-                            all_numbers = []
-                            online_numbers = []
-                            for d_id, d_val in data.items():
-                                if isinstance(d_val, dict):
-                                    phone = d_id if (len(d_id)>=10 and d_id.isdigit()) else None
-                                    if phone:
-                                        all_numbers.append(phone)
-                            return "live_no_auth", all_numbers, online_numbers
+                        data2 = res2.json()
+                        if data2:
+                            all_nums, online_nums = extract_numbers_recursive(data2)
+                            return "live_no_auth", all_nums, online_nums
                 except:
                     pass
             return "auth_error", [], []
@@ -359,7 +373,7 @@ def get_services_list():
 # --- TELEGRAM LISTENER ---
 def telegram_listener(token, session):
     offset = 0
-    print("[Bot] Listener with Free Tubesave Checker & Strict Force Join started.")
+    print("[Bot] Listener with Manual Number Checker & Deep Extractor started.")
     waiting_for_panel = {}
 
     while True:
@@ -446,7 +460,7 @@ def telegram_listener(token, session):
                                     app_keyboard.append(row)
                                 send_keyboard_message(session, token, chat_id, "🔍 **Free Number Checker**\n\nKripya app chuniye jiska status check karna hai:", app_keyboard)
                             
-                            # --- SINGLE NUMBER CHECKER CALLBACKS ---
+                            # --- MANUAL NUMBER CHECKER APP SELECTION ---
                             elif data_val.startswith("single_chk_app_"):
                                 app_name = data_val.replace("single_chk_app_", "")
                                 u_data = get_user_data(chat_id)
@@ -456,7 +470,7 @@ def telegram_listener(token, session):
                                 answer_callback(session, token, cq_id, f"Selected: {app_name.upper()}")
                                 session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": f"📱 Aapne **{app_name.upper()}** select kiya hai.\n\nAb kripya apna **Mobile Number** bhejien (jaise `9876543210`):"})
 
-                            # --- FIREBASE BULK CHECKER CALLBACKS ---
+                            # --- FIREBASE BULK CHECKER APP SELECTION ---
                             elif data_val.startswith("chk_app_"):
                                 app_name = data_val.replace("chk_app_", "")
                                 u_data = get_user_data(chat_id)
@@ -515,7 +529,7 @@ def telegram_listener(token, session):
 
                         save_user(chat_id)
 
-                        # --- STRICT FORCE JOIN & LEAVE CHECK (Mandatory for ALL users) ---
+                        # --- STRICT FORCE JOIN & LEAVE CHECK ---
                         if not check_user_channel(session, token, chat_id):
                             join_text = (
                                 "🚨 **Access Denied!**\n\n"
@@ -546,7 +560,7 @@ def telegram_listener(token, session):
                                 u_data["left_channel_penalty"] = True
                                 update_user_data(chat_id, u_data)
 
-                        # --- HANDLE SINGLE NUMBER CHECK INPUT ---
+                        # --- HANDLE MANUAL NUMBER CHECK INPUT ---
                         if u_data.get("waiting_for_single_check"):
                             u_data["waiting_for_single_check"] = False
                             update_user_data(chat_id, u_data)
@@ -584,7 +598,7 @@ def telegram_listener(token, session):
                                 "ℹ️ **About Bot:**\n\n"
                                 "Yeh bot Firebase database extraction aur **Free Number Checker** (Tubesave API powered) ki suvidha deta hai!\n\n"
                                 "🛠 **Features:**\n"
-                                "• **Number Checker:** Bilkul free mein kisi bhi app par number check karein.\n"
+                                "• **Number Checker:** Free mein manual number ya firebase numbers check karein.\n"
                                 "• **Firebase Extractor:** Panel links ya APKs se data nikalne ke liye active subscription zaroori hai."
                             )
                             session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": about_text, "parse_mode": "Markdown"})
@@ -857,7 +871,7 @@ def telegram_listener(token, session):
 
 if __name__ == "__main__":
     print("="*50)
-    print("  Bot Running with Free Checker & Sub-Required Extractor...")
+    print("  Bot Running with Manual Number Checker & Fixed Extractor...")
     print("="*50)
     session = requests.Session()
     threading.Thread(target=telegram_listener, args=(BOT_TOKEN, session), daemon=True).start()
