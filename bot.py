@@ -11,7 +11,7 @@ from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-BOT_TOKEN = "8632363521:AAHNRohlbeU5jieMQdtm5rDREeUCylebJTA"
+BOT_TOKEN = "8632363521:AAGwyB_ALt49ImXEC_SnZIYpGwZ6kIMVZn0"
 ADMIN_CHAT_ID = 6755426755
 CHANNEL_USERNAME = "@trickzone6"
 
@@ -100,7 +100,7 @@ def parse_links_bulk(text):
         if not line or line.startswith("#"):
             continue
         
-        # Decode base64 parameters from panel links (Zenith, EdgeOne, etc.)
+        # 1. Gather all possible encoded strings or query parameters
         param_matches = re.findall(r'[?&][a-zA-Z0-9_-]+=([A-Za-z0-9+/=_-]+)', line)
         decoded_texts = [line]
         for match in param_matches:
@@ -110,29 +110,36 @@ def parse_links_bulk(text):
                 decoded_bytes = base64.b64decode(raw)
                 decoded = decoded_bytes.decode('utf-8', errors='ignore')
                 decoded_texts.append(decoded)
+                
+                # Double layer base64 check
+                if not decoded.startswith(('{', '[', 'http')) and re.match(r'^[A-Za-z0-9+/=]+$', decoded.strip()):
+                    try:
+                        d2 = base64.b64decode(decoded.strip()).decode('utf-8', errors='ignore')
+                        decoded_texts.append(d2)
+                    except:
+                        pass
             except:
                 pass
 
         found_any = False
         for text_block in decoded_texts:
-            # 1. Deep JSON Scan for nested URLs and keys
+            # 2. Deep JSON/Dict recursion scanner
             try:
                 data = json.loads(text_block)
                 def dig_json(obj):
                     nonlocal found_any
                     if isinstance(obj, dict):
-                        p_url = obj.get('url', '') or obj.get('firebase', '') or obj.get('rtdb', '') or obj.get('link', '')
-                        p_key = obj.get('key', 'dummy') or obj.get('secret', 'dummy') or obj.get('auth', 'dummy') or "dummy"
-                        if p_url and isinstance(p_url, str):
-                            clean_url = p_url.rstrip('/')
-                            if not clean_url.startswith("http"):
-                                clean_url = "https://" + clean_url
-                            if "firebase" in clean_url.lower() or "rtdb" in clean_url.lower():
+                        for k, v in obj.items():
+                            if isinstance(v, str) and ("firebase" in v.lower() or "rtdb" in v.lower() or "firebaseio.com" in v.lower() or "firebasedatabase.app" in v.lower()):
+                                clean_url = v.rstrip('/')
+                                if not clean_url.startswith("http"):
+                                    clean_url = "https://" + clean_url
+                                p_key = obj.get('key') or obj.get('secret') or obj.get('auth') or "dummy"
                                 if (clean_url, str(p_key)) not in [(x[0], x[1]) for x in parsed_results]:
                                     parsed_results.append((clean_url, str(p_key)))
                                     found_any = True
-                        for val in obj.values():
-                            dig_json(val)
+                            elif isinstance(v, (dict, list)):
+                                dig_json(v)
                     elif isinstance(obj, list):
                         for item in obj:
                             dig_json(item)
@@ -142,7 +149,7 @@ def parse_links_bulk(text):
             except:
                 pass
 
-            # 2. Regex search for Firebase URLs inside text blocks
+            # 3. Direct regex search for firebase domains
             urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com|https?://[a-zA-Z0-9.-]+\.firebasedatabase\.app', text_block)
             for u in urls:
                 u_clean = u.rstrip('/')
@@ -153,7 +160,7 @@ def parse_links_bulk(text):
         if found_any:
             continue
 
-        # 3. Custom separator || format
+        # 4. Custom separator || format
         if '||' in line:
             parts = re.split(r'\|{2,}', line)
             url = parts[0].strip().rstrip('/')
@@ -165,7 +172,7 @@ def parse_links_bulk(text):
                     parsed_results.append((url, key))
                 continue
 
-        # 4. Direct plain URL fallback
+        # 5. Plain URL fallback
         if "firebaseio.com" in line or "firebasedatabase.app" in line or line.startswith("http"):
             url = line.strip().rstrip('/')
             if "firebase" in url.lower() or "rtdb" in url.lower():
@@ -230,9 +237,9 @@ def cmd_start(message):
                     u_data["referred_by"] = ref_id
                     update_user_data(user_id, u_data)
                     
-                    ref_data = get_user_data(ref_id)
+                    ref_data = get_user_data(int(ref_id))
                     ref_data["credits"] = ref_data.get("credits", 0) + 10
-                    update_user_data(ref_id, ref_data)
+                    update_user_data(int(ref_id), ref_data)
                     u_data["ref_rewarded"] = True
                     update_user_data(user_id, u_data)
                     
