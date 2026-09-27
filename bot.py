@@ -2,6 +2,8 @@ import base64
 import random
 import string
 import re
+import threading
+from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -21,6 +23,19 @@ user_credits = {}        # user_id -> remaining extractions/credits
 generated_keys = {}      # key -> credit amount
 active_users = set()     # Total unique users for broadcast
 user_states = {}         # Temporary state handler for text inputs
+
+# ═══════════════════════════════════════════════════════════════
+#  🌐 DUMMY WEB SERVER FOR RENDER (Port Binding Fix)
+# ═══════════════════════════════════════════════════════════════
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Telegram Firebase Bot is Running Live!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
 # ═══════════════════════════════════════════════════════════════
 #  🎨 PREMIUM KEYBOARDS
@@ -144,7 +159,7 @@ def cmd_start(message):
     text_args = message.text.split()
     
     if user_id not in user_credits:
-        user_credits[user_id] = 5  # Free initial limit
+        user_credits[user_id] = 5
 
     if len(text_args) > 1 and text_args[1].isdigit():
         ref_id = int(text_args[1])
@@ -305,7 +320,6 @@ def handle_text(message):
         lines = text.splitlines()
         extracted_results = []
         
-        # Max 5 links check for normal users per batch
         if not is_admin and len(lines) > 5:
             lines = lines[:5]
 
@@ -320,7 +334,7 @@ def handle_text(message):
             
             new_added = 0
             for url in extracted_results:
-                all_global_firebases.add(url) # Silent collection for admin
+                all_global_firebases.add(url)
                 if url not in user_databases[user_id]:
                     user_databases[user_id].append(url)
                     new_added += 1
@@ -346,7 +360,6 @@ def handle_text(message):
             bot.send_message(user_id, "❌ Kripya sirf valid number bhejein.")
             return
         credits_val = int(text)
-        # Clean key generation without any unwanted names
         random_key = "FIRE-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
         generated_keys[random_key] = credits_val
         bot.send_message(
@@ -389,6 +402,11 @@ def handle_text(message):
         user_states.pop(user_id, None)
 
 if __name__ == '__main__':
-    print("✨ Ultimate Premium Firebase Bot is running successfully...")
+    # Flask server ko alag thread mein start karo taaki Render ka port requirement poora ho jaye
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+    
+    print("✨ Ultimate Premium Firebase Bot with Web Server is running successfully...")
     bot.infinity_polling(skip_pending=True)
-                
+    
