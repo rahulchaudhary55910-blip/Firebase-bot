@@ -8,7 +8,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ═══════════════════════════════════════════════════════════════
 #  🔧 CONFIG & TOKENS
 # ═══════════════════════════════════════════════════════════════
-BOT_TOKEN = "8800325724:AAFscQlBeP0TEOb9fsV_aE0DP3IaMQ7E_TA"
+BOT_TOKEN = "8632363521:AAHmUpYvXtViGysiVRkhXiII_2SxcBnorIw"
 CHANNEL_USERNAME = "@AapkaChannelUsername"  # Apna channel username yahan daalein
 ADMIN_ID = 6755426755  # Aapki Admin ID
 
