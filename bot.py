@@ -1,34 +1,18 @@
-import json
 import os
 import re
-import time
-import base64
-import zipfile
+import json
 import random
 import string
 import requests
-from flask import Flask
 import threading
-import functools
 from datetime import datetime, timedelta
+from flask import Flask
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-try:
-    import sys
-    sys.stdout.reconfigure(encoding="utf-8")
-except Exception:
-    pass
-
-print = functools.partial(print, flush=True)
-
-# ================= APNA CONFIG YAHAN SET HAI =================
-BOT_TOKEN = "8632363521:AAGqaQT0-amCGntB2FZR4GG_HidShHwCfac"
-ADMIN_CHAT_ID = "6755426755"
-CHANNEL_USERNAME = "@trickzone6"  # Aapka official channel username
-TIMEOUT = 10
-USERS_FILE = "bot_users.json"
-CREDITS_FILE = "user_credits.json"
-KEYS_FILE = "redeem_keys.json"
-# ==============================================================
+BOT_TOKEN = "8632363521:AAHmUpYvXtViGysiVRkhXiII_2SxcBnorIw"
+ADMIN_CHAT_ID = 6755426755
+CHANNEL_USERNAME = "@trickzone6"
 
 app = Flask(__name__)
 
@@ -37,21 +21,19 @@ def home():
     return "✨ Ultimate Premium Firebase Extractor Bot is Active & Running Live!"
 
 def run_flask():
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
 
-def self_ping():
-    render_url = os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:10000")
-    while True:
-        try:
-            requests.get(render_url, timeout=10)
-        except Exception:
-            pass
-        time.sleep(300)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
+
+USERS_FILE = "bot_users.json"
+CREDITS_FILE = "user_credits.json"
+KEYS_FILE = "redeem_keys.json"
 
 def load_json(filename):
     if os.path.exists(filename):
         try:
-            with open(filename, "r") as f:
+            with open(filename, "r", encoding="utf-8") as f:
                 return json.load(f)
         except:
             pass
@@ -59,39 +41,10 @@ def load_json(filename):
 
 def save_json(filename, data):
     try:
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
     except:
         pass
-
-def load_users():
-    if os.path.exists(USERS_FILE):
-        try:
-            with open(USERS_FILE, "r") as f:
-                return set(json.load(f))
-        except:
-            pass
-    return set()
-
-def save_user(chat_id):
-    users = load_users()
-    if str(chat_id) not in users:
-        users.add(str(chat_id))
-        save_json(USERS_FILE, list(users))
-
-def check_user_channel(session, token, chat_id):
-    if str(chat_id) == str(ADMIN_CHAT_ID):
-        return True
-    try:
-        url = f"https://api.telegram.org/bot{token}/getChatMember?chat_id={CHANNEL_USERNAME}&user_id={chat_id}"
-        res = session.get(url, timeout=10).json()
-        if res.get("ok"):
-            status = res["result"].get("status")
-            if status in ["member", "administrator", "creator"]:
-                return True
-    except Exception as e:
-        print(f"Channel Check Error: {e}")
-    return False
 
 def get_user_data(chat_id):
     data = load_json(CREDITS_FILE)
@@ -113,10 +66,21 @@ def update_user_data(chat_id, user_data):
     data[str(chat_id)] = user_data
     save_json(CREDITS_FILE, data)
 
-def has_active_sub(chat_id):
-    if str(chat_id) == str(ADMIN_CHAT_ID):
+def check_channel(user_id):
+    if user_id == ADMIN_CHAT_ID:
         return True
-    u_data = get_user_data(chat_id)
+    try:
+        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+    except:
+        pass
+    return False
+
+def has_active_sub(user_id):
+    if user_id == ADMIN_CHAT_ID:
+        return True
+    u_data = get_user_data(user_id)
     expiry = u_data.get("sub_expiry")
     if expiry:
         try:
@@ -127,27 +91,6 @@ def has_active_sub(chat_id):
             pass
     return False
 
-def send_keyboard_message(session, token, chat_id, text, inline_keyboard):
-    try:
-        r = session.post(f"https://api.telegram.org/bot{token}/sendMessage",
-                         json={
-                             "chat_id": chat_id,
-                             "text": text,
-                             "reply_markup": {"inline_keyboard": inline_keyboard},
-                             "parse_mode": "Markdown"
-                         }, timeout=15)
-        return r.status_code == 200
-    except Exception:
-        return False
-
-def answer_callback(session, token, callback_query_id, text=""):
-    try:
-        session.post(f"https://api.telegram.org/bot{token}/answerCallbackQuery",
-                     json={"callback_query_id": callback_query_id, "text": text}, timeout=10)
-    except Exception:
-        pass
-
-# --- UNIVERSAL ADVANCED LINK & QUERY PARSER ---
 def parse_links_bulk(text):
     lines = text.strip().split('\n')
     parsed_results = []
@@ -165,13 +108,6 @@ def parse_links_bulk(text):
                 decoded_bytes = base64.b64decode(raw)
                 decoded = decoded_bytes.decode('utf-8', errors='ignore')
                 decoded_texts.append(decoded)
-                
-                if not decoded.startswith(('{', '[', 'http')) and re.match(r'^[A-Za-z0-9+/=]+$', decoded.strip()):
-                    try:
-                        d2 = base64.b64decode(decoded.strip()).decode('utf-8', errors='ignore')
-                        decoded_texts.append(d2)
-                    except:
-                        pass
             except:
                 pass
 
@@ -179,42 +115,34 @@ def parse_links_bulk(text):
         for text_block in decoded_texts:
             try:
                 data = json.loads(text_block)
-                if isinstance(data, list):
-                    for item in data:
-                        if isinstance(item, dict):
-                            p_url = item.get('url', '').rstrip('/')
-                            p_key = item.get('key', 'dummy') or "dummy"
-                            if p_url:
-                                if not p_url.startswith("http"):
-                                    p_url = "https://" + p_url
-                                pm = re.search(r'https://([^.]+)', p_url)
-                                p_name = pm.group(1) if pm else "unknown"
-                                if (p_url, p_key, p_name) not in parsed_results:
-                                    parsed_results.append((p_url, p_key, p_name))
-                                    found_any = True
+                def dig_json(obj):
+                    nonlocal found_any
+                    if isinstance(obj, dict):
+                        p_url = obj.get('url', '') or obj.get('firebase', '') or obj.get('rtdb', '')
+                        p_key = obj.get('key', 'dummy') or obj.get('secret', 'dummy') or "dummy"
+                        if p_url and isinstance(p_url, str):
+                            clean_url = p_url.rstrip('/')
+                            if not clean_url.startswith("http"):
+                                clean_url = "https://" + clean_url
+                            if (clean_url, str(p_key)) not in [(x[0], x[1]) for x in parsed_results]:
+                                parsed_results.append((clean_url, str(p_key)))
+                                found_any = True
+                        for val in obj.values():
+                            dig_json(val)
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            dig_json(item)
+                dig_json(data)
+                if found_any:
                     continue
-                elif isinstance(data, dict):
-                    p_url = data.get('url', '').rstrip('/')
-                    p_key = data.get('key', 'dummy') or "dummy"
-                    if p_url:
-                        if not p_url.startswith("http"):
-                            p_url = "https://" + p_url
-                        pm = re.search(r'https://([^.]+)', p_url)
-                        p_name = pm.group(1) if pm else "unknown"
-                        if (p_url, p_key, p_name) not in parsed_results:
-                            parsed_results.append((p_url, p_key, p_name))
-                            found_any = True
-                        continue
             except:
                 pass
 
             urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com|https?://[a-zA-Z0-9.-]+\.firebasedatabase\.app', text_block)
             for u in urls:
                 u_clean = u.rstrip('/')
-                pm = re.search(r'https://([^.]+)', u_clean)
-                p_name = pm.group(1) if pm else "unknown"
-                if (u_clean, "dummy", p_name) not in parsed_results:
-                    parsed_results.append((u_clean, "dummy", p_name))
+                if (u_clean, "dummy") not in [(x[0], x[1]) for x in parsed_results]:
+                    parsed_results.append((u_clean, "dummy"))
                     found_any = True
 
         if found_any:
@@ -222,525 +150,410 @@ def parse_links_bulk(text):
 
         if '||' in line:
             parts = re.split(r'\|{2,}', line)
-            url = parts[0].strip()
+            url = parts[0].strip().rstrip('/')
             key = parts[1].strip() if len(parts) > 1 and parts[1].strip() else "dummy"
             if url:
-                url = url.rstrip('/')
                 if not url.startswith("http"):
                     url = "https://" + url
-                pm = re.search(r'https://([^.]+)', url)
-                p_name = pm.group(1) if pm else "unknown"
-                parsed_results.append((url, key, p_name))
+                if (url, key) not in [(x[0], x[1]) for x in parsed_results]:
+                    parsed_results.append((url, key))
                 continue
 
         if "firebaseio.com" in line or "firebasedatabase.app" in line or line.startswith("http"):
-            url = line.rstrip('/')
-            pm = re.search(r'https://([^.]+)', url)
-            p_name = pm.group(1) if pm else "unknown"
-            parsed_results.append((url, "dummy", p_name))
+            url = line.strip().rstrip('/')
+            if (url, "dummy") not in [(x[0], x[1]) for x in parsed_results]:
+                parsed_results.append((url, "dummy"))
 
     return parsed_results
 
 def check_firebase(url, key):
-    result = {
-        "url": url,
-        "key": key,
-        "panel_name": "unknown",
-        "status": "unknown",
-        "total_devices": 0,
-        "online_devices": 0,
-        "error": None
-    }
-    pm = re.search(r'https://([^.]+)', url)
-    if pm:
-        result["panel_name"] = pm.group(1)
-    clients_url = f"{url}/clients.json"
-    if key and key != "dummy":
-        clients_url += f"?auth={key}"
+    total, online = 0, 0
     try:
-        res = requests.get(clients_url, timeout=TIMEOUT)
+        clients_url = f"{url}/clients.json"
+        if key and key != "dummy":
+            clients_url += f"?auth={key}"
+        res = requests.get(clients_url, timeout=10)
         if res.status_code == 200:
             data = res.json()
-            if data and isinstance(data, dict):
-                result["status"] = "live"
-                result["total_devices"] = len(data)
-                result["online_devices"] = sum(
-                    1 for d in data.values() 
-                    if isinstance(d, dict) and (d.get("status") or d.get("online") or d.get("lastSeen"))
-                )
-                return result
-            else:
-                result["status"] = "empty"
-                return result
-        elif res.status_code == 401:
-            if key and key != "dummy":
+            if isinstance(data, dict) and data:
+                total = len(data)
+                online = sum(1 for d in data.values() if isinstance(d, dict) and (d.get("status") or d.get("online") or d.get("lastSeen")))
+        elif res.status_code == 401 and key and key != "dummy":
+            res2 = requests.get(f"{url}/clients.json", timeout=10)
+            if res2.status_code == 200:
+                data2 = res2.json()
+                if isinstance(data2, dict) and data2:
+                    total = len(data2)
+                    online = sum(1 for d in data2.values() if isinstance(d, dict) and (d.get("status") or d.get("online") or d.get("lastSeen")))
+    except:
+        pass
+    return total, online
+
+def get_main_keyboard(is_admin=False):
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🚀 Extract From Web Panel", callback_data="extract_menu"),
+        InlineKeyboardButton("💳 Buy 3-Day Sub (10 Cr)", callback_data="buy_subscription"),
+        InlineKeyboardButton("📊 My History & DB", callback_data="view_databases"),
+        InlineKeyboardButton("🎁 Refer & Earn", callback_data="get_referral"),
+        InlineKeyboardButton("🔑 Redeem Key", callback_data="redeem_key"),
+        InlineKeyboardButton("ℹ️ Help & Rules", callback_data="help_menu"),
+        InlineKeyboardButton("⚡ System Status", callback_data="system_status")
+    )
+    if is_admin:
+        markup.add(
+            InlineKeyboardButton("📥 Download All DBs (Admin)", callback_data="admin_download"),
+            InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast"),
+            InlineKeyboardButton("🎟️ Generate Key", callback_data="admin_genkey")
+        )
+    return markup
+
+@bot.message_handler(commands=['start'])
+def cmd_start(message):
+    user_id = message.from_user.id
+    u_data = get_user_data(user_id)
+    text_args = message.text.split()
+    
+    if len(text_args) > 1 and text_args[1].startswith("ref_"):
+        try:
+            ref_id = text_args[1].split("_")[1]
+            if int(ref_id) != user_id and not u_data.get("referred_by"):
+                if check_channel(user_id):
+                    u_data["referred_by"] = ref_id
+                    update_user_data(user_id, u_data)
+                    
+                    ref_data = get_user_data(ref_id)
+                    ref_data["credits"] = ref_data.get("credits", 0) + 10
+                    update_user_data(ref_id, ref_data)
+                    u_data["ref_rewarded"] = True
+                    update_user_data(user_id, u_data)
+                    
+                    try:
+                        bot.send_message(ref_id, "🎁 <b>New Verified Referral!</b>\n\nAapke link se ek naye user ne join kiya hai.\n🎁 <b>+10 Credits</b> added to your account!")
+                    except:
+                        pass
+        except:
+            pass
+
+    if user_id != ADMIN_CHAT_ID and u_data.get("ref_rewarded") and not u_data.get("left_channel_penalty", False):
+        if not check_channel(user_id):
+            ref_id = u_data.get("referred_by")
+            if ref_id:
+                ref_data = get_user_data(ref_id)
+                ref_data["credits"] = max(0, ref_data.get("credits", 0) - 10)
+                update_user_data(ref_id, ref_data)
                 try:
-                    res2 = requests.get(f"{url}/clients.json", timeout=TIMEOUT)
-                    if res2.status_code == 200:
-                        data2 = res2.json()
-                        if data2 and isinstance(data2, dict):
-                            result["status"] = "live_no_auth"
-                            result["total_devices"] = len(data2)
-                            result["online_devices"] = sum(
-                                1 for d in data2.values() 
-                                if isinstance(d, dict) and (d.get("status") or d.get("online") or d.get("lastSeen"))
-                            )
-                            return result
+                    bot.send_message(int(ref_id), "⚠️ <b>Referral Alert!</b>\n\nAapke ek referred user ne channel leave kar diya hai, isliye aapke <b>10 credits</b> minus ho gaye hain!")
                 except:
                     pass
-            result["status"] = "auth_error"
-            return result
-        else:
-            result["status"] = f"http_{res.status_code}"
-            return result
-    except Exception as e:
-        result["status"] = "error"
-        result["error"] = str(e)[:100]
-        return result
+            u_data["left_channel_penalty"] = True
+            update_user_data(user_id, u_data)
 
-def telegram_listener(token, session):
-    offset = 0
-    print("[Bot] Universal Premium Listener started.")
-    waiting_for_panel = {}
-    waiting_for_key = {}
-    waiting_for_broadcast = {}
-    waiting_for_genkey = {}
+    if not check_channel(user_id):
+        join_kb = InlineKeyboardMarkup()
+        join_kb.add(InlineKeyboardButton("📢 Join Official Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"))
+        join_kb.add(InlineKeyboardButton("🔄 Verify Membership", callback_data="check_join"))
+        bot.send_message(
+            user_id,
+            "⚠️ <b>ACCESS DENIED!</b>\n\n"
+            f"Bot ko use karne ke liye pehle hamara channel join karna compulsory hai:\n👉 {CHANNEL_USERNAME}\n\n"
+            "Join karne ke baad niche <b>Verify Membership</b> par click karein.",
+            reply_markup=join_kb
+        )
+        return
 
-    while True:
-        try:
-            r = session.get(f"https://api.telegram.org/bot{token}/getUpdates", params={"offset": offset, "timeout": 30}, timeout=35)
-            if r.status_code == 200:
-                data = r.json()
-                if data.get("ok"):
-                    for update in data.get("result", []):
-                        offset = update["update_id"] + 1
-                        
-                        callback = update.get("callback_query")
-                        if callback:
-                            cq_id = callback.get("id")
-                            chat_id = str(callback.get("message", {}).get("chat", {}).get("id"))
-                            data_val = callback.get("data", "")
-                            
-                            if data_val == "check_sub":
-                                if check_user_channel(session, token, chat_id):
-                                    u_data = get_user_data(chat_id)
-                                    if u_data.get("referred_by") and not u_data.get("ref_rewarded"):
-                                        referrer_id = u_data["referred_by"]
-                                        ref_data = get_user_data(referrer_id)
-                                        ref_data["credits"] = ref_data.get("credits", 0) + 10
-                                        update_user_data(referrer_id, ref_data)
-                                        
-                                        u_data["ref_rewarded"] = True
-                                        u_data["left_channel_penalty"] = False
-                                        update_user_data(chat_id, u_data)
-                                        try:
-                                            session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                                "chat_id": referrer_id, 
-                                                "text": "🎉 **New Verified Referral!**\n\nAapke referred user ne channel join verify kar liya hai.\n🎁 **+10 Credits** added to your account!"
-                                            })
-                                        except:
-                                            pass
-                                    
-                                    answer_callback(session, token, cq_id, "✅ Verification Successful!")
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                        "chat_id": chat_id, 
-                                        "text": "🎉 **Verification Successful!**\n\nAapka channel join verify ho gaya hai. Ab aap /start dabakar bot use kar sakte hain."
-                                    })
-                                else:
-                                    answer_callback(session, token, cq_id, "❌ Aapne abhi tak channel join nahi kiya hai!")
-                            
-                            elif data_val == "btn_profile":
-                                answer_callback(session, token, cq_id)
-                                u_data = get_user_data(chat_id)
-                                credits = u_data.get("credits", 0)
-                                sub_status = "Active 🟢" if has_active_sub(chat_id) else "Inactive 🔴"
-                                bot_info = session.get(f"https://api.telegram.org/bot{token}/getMe").json()
-                                b_username = bot_info.get("result", {}).get("username", "bot")
-                                ref_link = f"https://t.me/{b_username}?start=ref_{chat_id}"
-                                
-                                profile_text = (
-                                    "👤 **P R O F I L E   D A S H B O A R D**\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"💰 **Credits Balance:** `{credits} Credits`\n"
-                                    f"👑 **Subscription Status:** `{sub_status}`\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                                    f"🔗 **Your Referral Link:**\n`{ref_link}`\n\n"
-                                    "🎁 **Rule:** Har verified invite par **+10 Credits**. Referred user ko channel join rakhna hoga, warna leave karne par credits minus ho jayenge!"
-                                )
-                                keyboard = [
-                                    [{"text": "💳 Buy 3-Day Pass (10 Credits)", "callback_data": "buy_sub"}],
-                                    [{"text": "🔙 Back to Main Menu", "callback_data": "main_menu"}]
-                                ]
-                                send_keyboard_message(session, token, chat_id, profile_text, keyboard)
-
-                            elif data_val == "buy_sub":
-                                u_data = get_user_data(chat_id)
-                                if u_data.get("credits", 0) >= 10:
-                                    u_data["credits"] -= 10
-                                    expiry = datetime.now() + timedelta(days=3)
-                                    u_data["sub_expiry"] = expiry.isoformat()
-                                    update_user_data(chat_id, u_data)
-                                    answer_callback(session, token, cq_id, "Success!")
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                        "chat_id": chat_id, 
-                                        "text": "🎉 **SUBSCRIPTION ACTIVATED!**\n\n✅ Plan: 3 Days Unlimited Access\n📉 Deducted: `-10 Credits`\n⏳ Expiry: `" + expiry.strftime('%Y-%m-%d %H:%M:%S') + "`"
-                                    })
-                                else:
-                                    answer_callback(session, token, cq_id, "Insufficient Credits!")
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                        "chat_id": chat_id, 
-                                        "text": "❌ **Insufficient Credits!**\n\nAapke paas kam se kam 10 credits hone chahiye. Dosto ko invite karein ya key redeem karein!"
-                                    })
-
-                            elif data_val == "btn_web_panel":
-                                if not check_user_channel(session, token, chat_id):
-                                    answer_callback(session, token, cq_id, "❌ Join channel first!")
-                                    continue
-                                if not has_active_sub(chat_id):
-                                    answer_callback(session, token, cq_id, "❌ Active subscription required!")
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                        "chat_id": chat_id,
-                                        "text": "❌ **Access Denied!**\n\nFirebase extract karne ke liye aapke paas active subscription honi zaroori hai. Pehle 10 credits se 3 din ka pass buy karein!"
-                                    })
-                                    continue
-
-                                answer_callback(session, token, cq_id, "Extractor activated!")
-                                waiting_for_panel[chat_id] = True
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                    "chat_id": chat_id, 
-                                    "text": "📥 **SEND PANEL DATA OR LINKS**\n\n_Aap kisi bhi panel ka link (Zenith, EdgeOne, etc.), Base64 string, ya direct links bhej sakte hain._"
-                                })
-
-                            elif data_val == "btn_redeem":
-                                answer_callback(session, token, cq_id)
-                                waiting_for_key[chat_id] = True
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                    "chat_id": chat_id,
-                                    "text": "🔑 **REDEEM LICENSE KEY**\n\nKripya apni valid license key yahan bhejein:"
-                                })
-
-                            elif data_val == "btn_history":
-                                answer_callback(session, token, cq_id)
-                                u_data = get_user_data(chat_id)
-                                dbs = u_data.get("my_databases", [])
-                                if not dbs:
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                        "chat_id": chat_id,
-                                        "text": "📊 **YOUR HISTORY & DATABASES**\n\n⚠️ Aapne abhi tak koi bhi Firebase extract nahi kiya hai."
-                                    })
-                                else:
-                                    filename = f"my_firebases_{chat_id}.txt"
-                                    with open(filename, "w", encoding="utf-8") as f:
-                                        f.write(f"# Your Extracted Firebases — User ID: {chat_id}\n\n")
-                                        for item in dbs:
-                                            if item.get('key') and item.get('key') != "dummy":
-                                                f.write(f"{item['url']}|||{item['key']}\n")
-                                            else:
-                                                f.write(f"{item['url']}\n")
-                                    
-                                    with open(filename, "rb") as doc:
-                                        session.post(f"https://api.telegram.org/bot{token}/sendDocument", 
-                                                     data={"chat_id": chat_id, "caption": f"📊 **Aapke Total Saved Firebases:** `{len(dbs)}`"},
-                                                     files={"document": doc})
-
-                            elif data_val == "btn_rules":
-                                answer_callback(session, token, cq_id)
-                                rules_text = (
-                                    "ℹ️ **H E L P   &   R U L E S   G U I D E**\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    "1️⃣ **Subscription Rule:** Firebase extract karne ke liye 10 credits se 3 din ki subscription purchase karna zaroori hai.\n"
-                                    "2️⃣ **Channel Membership:** Official channel join rakhna compulsory hai.\n"
-                                    "3️⃣ **Referral Policy:** Har verified refer par **+10 Credits** milte hain. Channel leave karne par credits deduct ho jayenge.\n"
-                                    "4️⃣ **Security:** All extracted data is safely saved in your private history."
-                                )
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": rules_text})
-
-                            elif data_val == "admin_download_all" and chat_id == str(ADMIN_CHAT_ID):
-                                answer_callback(session, token, cq_id)
-                                all_dbs = set()
-                                all_data = load_json(CREDITS_FILE)
-                                for u_info in all_data.values():
-                                    for db in u_info.get("my_databases", []):
-                                        if db.get('url'):
-                                            all_dbs.add(db['url'])
-                                
-                                if not all_dbs:
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ Database mein koi firebase nahi hai."})
-                                else:
-                                    filename = "all_admin_firebases.txt"
-                                    with open(filename, "w", encoding="utf-8") as f:
-                                        f.write("\n".join(sorted(all_dbs)))
-                                    with open(filename, "rb") as doc:
-                                        session.post(f"https://api.telegram.org/bot{token}/sendDocument", 
-                                                     data={"chat_id": chat_id, "caption": f"📁 Total **{len(all_dbs)}** Unique Firebases Collected Across All Users!"},
-                                                     files={"document": doc})
-
-                            elif data_val == "admin_gen" and chat_id == str(ADMIN_CHAT_ID):
-                                answer_callback(session, token, cq_id)
-                                waiting_for_genkey[chat_id] = True
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "🔑 Kitne credits ki key banani hai? Sirf number bhejein (jaise: `10`):"})
-
-                            elif data_val == "admin_bc" and chat_id == str(ADMIN_CHAT_ID):
-                                answer_callback(session, token, cq_id)
-                                waiting_for_broadcast[chat_id] = True
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "📢 Jo message saare users ko bhejna hai, woh yahan forward ya type karein:"})
-
-                            elif data_val == "main_menu":
-                                answer_callback(session, token, cq_id)
-                                u_data = get_user_data(chat_id)
-                                credits = u_data.get("credits", 0)
-                                sub_status = "Lifetime (Admin)" if chat_id == str(ADMIN_CHAT_ID) else ("Active 🟢" if has_active_sub(chat_id) else "Expired / None 🔴")
-                                
-                                welcome_text = (
-                                    "✨ **P R E M I U M   F I R E B A S E   H U B** ✨\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"👋 *Welcome back, {callback.get('message', {}).get('chat', {}).get('first_name', 'User')}!*\n\n"
-                                    f"💳 **Aapke Credits:** `{credits} Credits`\n"
-                                    f"⏳ **Subscription Status:** `{sub_status}`\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    "_Select an option from the dashboard below:_"
-                                )
-                                keyboard = [
-                                    [{"text": "🚀 Extract From Web Panel", "callback_data": "btn_web_panel"}, {"text": "💳 Buy 3-Day Sub (10 Cr)", "callback_data": "buy_sub"}],
-                                    [{"text": "📊 My History & DB", "callback_data": "btn_history"}, {"text": "🎁 Refer & Earn", "callback_data": "btn_profile"}],
-                                    [{"text": "🔑 Redeem Key", "callback_data": "btn_redeem"}, {"text": "ℹ️ Help & Rules", "callback_data="btn_rules"}],
-                                    [{"text": "⚡ System Status", "callback_data": "btn_status"}]
-                                ]
-                                if chat_id == str(ADMIN_CHAT_ID):
-                                    keyboard.append([{"text": "📥 Download All DBs (Admin)", "callback_data": "admin_download_all"}])
-                                    keyboard.append([{"text": "📢 Broadcast", "callback_data": "admin_bc"}, {"text": "🎟️ Generate Key", "callback_data": "admin_gen"}])
-                                
-                                send_keyboard_message(session, token, chat_id, welcome_text, keyboard)
-                            continue
-
-                        message = update.get("message")
-                        if not message:
-                            continue
-                        
-                        chat_id = str(message.get("chat", {}).get("id"))
-                        user_info = message.get("from", {})
-                        first_name = user_info.get("first_name", "User")
-                        text = message.get("text", "").strip()
-
-                        save_user(chat_id)
-
-                        # Leave channel check penalty calculation
-                        u_data = get_user_data(chat_id)
-                        if chat_id != str(ADMIN_CHAT_ID) and u_data.get("ref_rewarded") and not u_data.get("left_channel_penalty", False):
-                            if not check_user_channel(session, token, chat_id):
-                                referrer_id = u_data.get("referred_by")
-                                if referrer_id:
-                                    ref_data = get_user_data(referrer_id)
-                                    ref_data["credits"] = max(0, ref_data.get("credits", 0) - 10)
-                                    update_user_data(referrer_id, ref_data)
-                                    try:
-                                        session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                            "chat_id": referrer_id, 
-                                            "text": "⚠️ **Referral Alert!**\n\nAapke ek referred user ne channel leave kar diya hai, isliye aapke **10 credits** minus ho gaye hain!"
-                                        })
-                                    except:
-                                        pass
-                                u_data["left_channel_penalty"] = True
-                                update_user_data(chat_id, u_data)
-
-                        if text.startswith("/start"):
-                            text_args = text.split()
-                            if len(text_args) > 1 and text_args[1].startswith("ref_"):
-                                try:
-                                    ref_id = text_args[1].split("_")[1]
-                                    if ref_id != chat_id and not u_data.get("referred_by"):
-                                        if check_user_channel(session, token, chat_id):
-                                            u_data["referred_by"] = ref_id
-                                            update_user_data(chat_id, u_data)
-                                            
-                                            ref_data = get_user_data(ref_id)
-                                            ref_data["credits"] = ref_data.get("credits", 0) + 10
-                                            update_user_data(ref_id, ref_data)
-                                            u_data["ref_rewarded"] = True
-                                            update_user_data(chat_id, u_data)
-                                            
-                                            session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                                "chat_id": ref_id, 
-                                                "text": "🎁 **New Verified Referral!**\n\nAapke link se ek naye user ne join kiya hai.\n🎁 **+10 Credits** added to your account!"
-                                            })
-                                except:
-                                    pass
-
-                            if not check_user_channel(session, token, chat_id):
-                                join_kb = [
-                                    [{"text": "📢 Join Official Channel", "url": f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"}],
-                                    [{"text": "🔄 Verify Membership", "callback_data": "check_sub"}]
-                                ]
-                                send_keyboard_message(
-                                    session, token, chat_id,
-                                    "⚠️ **ACCESS DENIED!**\n\n"
-                                    f"Bot ko use karne ke liye pehle hamara channel join karna compulsory hai:\n👉 {CHANNEL_USERNAME}\n\n"
-                                    "Join karne ke baad niche **Verify Membership** par click karein.",
-                                    join_kb
-                                )
-                                continue
-
-                            credits = u_data.get("credits", 0)
-                            sub_status = "Lifetime (Admin)" if chat_id == str(ADMIN_CHAT_ID) else ("Active 🟢" if has_active_sub(chat_id) else "Expired / None 🔴")
-                            
-                            welcome_text = (
-                                "✨ **P R E M I U M   F I R E B A S E   H U B** ✨\n"
-                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"👋 *Welcome back, {first_name}!*\n\n"
-                                f"💳 **Aapke Credits:** `{credits} Credits`\n"
-                                f"⏳ **Subscription Status:** `{sub_status}`\n"
-                                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                "_Select an option from the dashboard below:_"
-                            )
-                            keyboard = [
-                                [{"text": "🚀 Extract From Web Panel", "callback_data": "btn_web_panel"}, {"text": "💳 Buy 3-Day Sub (10 Cr)", "callback_data": "buy_sub"}],
-                                [{"text": "📊 My History & DB", "callback_data": "btn_history"}, {"text": "🎁 Refer & Earn", "callback_data": "btn_profile"}],
-                                [{"text": "🔑 Redeem Key", "callback_data": "btn_redeem"}, {"text": "ℹ️ Help & Rules", "callback_data": "btn_rules"}],
-                                [{"text": "⚡ System Status", "callback_data": "btn_status"}]
-                            ]
-                            if chat_id == str(ADMIN_CHAT_ID):
-                                keyboard.append([{"text": "📥 Download All DBs (Admin)", "callback_data": "admin_download_all"}])
-                                keyboard.append([{"text": "📢 Broadcast", "callback_data": "admin_bc"}, {"text": "🎟️ Generate Key", "callback_data": "admin_gen"}])
-                            
-                            send_keyboard_message(session, token, chat_id, welcome_text, keyboard)
-                            continue
-
-                        # Handle Gen Key State
-                        if chat_id == str(ADMIN_CHAT_ID) and chat_id in waiting_for_genkey:
-                            waiting_for_genkey.pop(chat_id, None)
-                            if text.isdigit():
-                                credits_val = int(text)
-                                random_key = "FIRE-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
-                                keys_data = load_json(KEYS_FILE)
-                                keys_data[random_key] = credits_val
-                                save_json(KEYS_FILE, keys_data)
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                    "chat_id": chat_id,
-                                    "text": f"✅ **License Key Generated Successfully!**\n\n🔑 Key: `{random_key}`\n💎 Credits: `{credits_val}`"
-                                })
-                            else:
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ Sirf valid number bhejein."})
-                            continue
-
-                        # Handle Redeem Key State
-                        if chat_id in waiting_for_key:
-                            waiting_for_key.pop(chat_id, None)
-                            keys_data = load_json(KEYS_FILE)
-                            if text in keys_data:
-                                creds = keys_data.pop(text)
-                                save_json(KEYS_FILE, keys_data)
-                                
-                                u_data["credits"] = u_data.get("credits", 0) + creds
-                                update_user_data(chat_id, u_data)
-                                
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                    "chat_id": chat_id,
-                                    "text": f"🎉 **Successfully Redeemed!**\n+{creds} Credits added to your account."
-                                })
-                                
-                                # Notify Admin
-                                admin_alert = (
-                                    "🔔 **NEW KEY REDEEMED!**\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"👤 User: `{first_name}`\n"
-                                    f"🆔 User ID: `{chat_id}`\n"
-                                    f"🔑 Key: `{text}`\n"
-                                    f"💎 Credits Added: `+{creds}`\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                                )
-                                try:
-                                    session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": ADMIN_CHAT_ID, "text": admin_alert})
-                                except:
-                                    pass
-                            else:
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ Invalid ya already used key!"})
-                            continue
-
-                        # Handle Broadcast State
-                        if chat_id == str(ADMIN_CHAT_ID) and chat_id in waiting_for_broadcast:
-                            waiting_for_broadcast.pop(chat_id, None)
-                            all_users = load_users()
-                            success, fail = 0, 0
-                            for uid in all_users:
-                                try:
-                                    res = session.post(f"https://api.telegram.org/bot{token}/copyMessage", json={
-                                        "chat_id": uid,
-                                        "from_chat_id": chat_id,
-                                        "message_id": message.get("message_id")
-                                    })
-                                    if res.status_code == 200:
-                                        success += 1
-                                    else:
-                                        fail += 1
-                                except:
-                                    fail += 1
-                            session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id,
-                                "text": f"📢 **Broadcast Completed!**\n\n✅ Delivered: {success}\n❌ Failed: {fail}"
-                            })
-                            continue
-
-                        # Handle Web Panel / Links Extractor State
-                        if chat_id in waiting_for_panel:
-                            waiting_for_panel.pop(chat_id, None)
-                            
-                            if not check_user_channel(session, token, chat_id):
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "⚠️ Pehle channel join karein."})
-                                continue
-                            if chat_id != str(ADMIN_CHAT_ID) and not has_active_sub(chat_id):
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": "❌ Active subscription required!"})
-                                continue
-
-                            parsed_items = parse_links_bulk(text)
-                            if not parsed_items:
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                    "chat_id": chat_id,
-                                    "text": "❌ **No Valid Firebase Found!**\n\nKripya sahi panel link ya text bhejein."
-                                })
-                                continue
-
-                            for idx, (url, key, p_name) in enumerate(parsed_items, 1):
-                                stats = check_firebase(url, key)
-                                total = stats["total_devices"]
-                                online = stats["online_devices"]
-                                status_str = stats["status"]
-                                
-                                res_msg = (
-                                    f"✨ **FIREBASE EXTRACTED #{idx}** ✨\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"🔗 **URL:** `{url}`\n"
-                                    f"🔑 **Key:** `{key}`\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                    f"📱 **Total Connections:** `{total}`\n"
-                                    f"🟢 **Online Connections:** `{online}`\n"
-                                    f"⚡ **Status:** `{status_str}`\n"
-                                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-                                )
-                                session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": chat_id, "text": res_msg})
-
-                                # Save to user private database history
-                                db_entry = {"url": url, "key": key}
-                                if db_entry not in u_data["my_databases"]:
-                                    u_data["my_databases"].append(db_entry)
-                            
-                            update_user_data(chat_id, u_data)
-                            session.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
-                                "chat_id": chat_id,
-                                "text": f"✅ **Successfully Processed {len(parsed_items)} Firebase(s)!**"
-                            })
-                            continue
-
-        except Exception as e:
-            print(f"Listener Error: {e}")
-        time.sleep(1)
-
-def main():
-    session = requests.Session()
-    threading.Thread(target=run_flask, daemon=True).start()
-    threading.Thread(target=self_ping, daemon=True).start()
+    is_admin = (user_id == ADMIN_CHAT_ID)
+    sub_status = "Lifetime (Admin)" if is_admin else ("Active 🟢" if has_active_sub(user_id) else "Expired / None 🔴")
     
-    print("[Bot] Starting Telegram Listener...")
-    telegram_listener(BOT_TOKEN, session)
+    welcome_text = (
+        "✨ <b>P R E M I U M   F I R E B A S E   H U B</b> ✨\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👋 <i>Welcome back, {message.from_user.first_name}!</i>\n\n"
+        f"💳 <b>Aapke Credits:</b> <code>{u_data.get('credits', 0)} Credits</code>\n"
+        f"⏳ <b>Subscription Status:</b> <code>{sub_status}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Select an option from the dashboard below:</i>"
+    )
+    bot.send_message(user_id, welcome_text, reply_markup=get_main_keyboard(is_admin))
 
-if __name__ == "__main__":
-    main()
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    user_id = call.from_user.id
+    data = call.data
+    is_admin = (user_id == ADMIN_CHAT_ID)
+    u_data = get_user_data(user_id)
+
+    if data == "check_join":
+        if check_channel(user_id):
+            bot.answer_callback_query(call.id, "✅ Verification Successful!")
+            if u_data.get("referred_by") and not u_data.get("ref_rewarded"):
+                ref_id = u_data["referred_by"]
+                ref_data = get_user_data(ref_id)
+                ref_data["credits"] = ref_data.get("credits", 0) + 10
+                update_user_data(ref_id, ref_data)
+                u_data["ref_rewarded"] = True
+                u_data["left_channel_penalty"] = False
+                update_user_data(user_id, u_data)
+                try:
+                    bot.send_message(int(ref_id), "🎁 <b>New Verified Referral!</b>\n\nAapke referred user ne channel join verify kar liya hai.\n🎁 <b>+10 Credits</b> added to your account!")
+                except:
+                    pass
+            cmd_start(call.message)
+        else:
+            bot.answer_callback_query(call.id, "❌ Aapne abhi tak channel join nahi kiya hai!", show_alert=True)
+
+    elif data == "buy_subscription":
+        if not check_channel(user_id):
+            bot.answer_callback_query(call.id, "❌ Pehle channel join karein!", show_alert=True)
+            return
+        
+        current_credits = u_data.get("credits", 0)
+        if current_credits < 10:
+            bot.answer_callback_query(call.id, "❌ Aapke paas kam se kam 10 credits hone chahiye!", show_alert=True)
+            return
+
+        u_data["credits"] -= 10
+        expiry = datetime.now() + timedelta(days=3)
+        u_data["sub_expiry"] = expiry.isoformat()
+        update_user_data(user_id, u_data)
+
+        bot.answer_callback_query(call.id, "🎉 Subscription Activated!")
+        bot.send_message(
+            user_id,
+            "🎉 <b>SUBSCRIPTION PURCHASED!</b>\n\n"
+            "✅ <b>Plan:</b> 3 Days Unlimited Access\n"
+            "📉 <b>Credits Deducted:</b> <code>-10 Credits</code>\n"
+            f"⏳ <b>Expiry:</b> <code>{expiry.strftime('%Y-%m-%d %H:%M:%S')}</code>",
+            reply_markup=get_main_keyboard(is_admin)
+        )
+
+    elif data == "extract_menu":
+        if not check_channel(user_id):
+            bot.answer_callback_query(call.id, "❌ Pehle channel join karein!", show_alert=True)
+            return
+        if not is_admin and not has_active_sub(user_id):
+            bot.answer_callback_query(call.id, "❌ Active subscription required (10 Credits)!", show_alert=True)
+            return
+            
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            user_id,
+            "📥 <b>SEND PANEL DATA OR LINKS</b>\n\n"
+            "<i>Aap kisi bhi panel ka link, Base64 string, ya direct links bhej sakte hain.</i>"
+        )
+        bot.register_next_step_handler_by_chat_id(user_id, process_extraction)
+
+    elif data == "view_databases":
+        dbs = u_data.get("my_databases", [])
+        if not dbs:
+            bot.answer_callback_query(call.id)
+            bot.send_message(user_id, "📊 <b>YOUR HISTORY & DATABASES</b>\n\n⚠️ Aapne abhi tak koi bhi Firebase extract nahi kiya hai.", reply_markup=get_main_keyboard(is_admin))
+        else:
+            filename = f"my_firebases_{user_id}.txt"
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(f"# Your Extracted Firebases — User ID: {user_id}\n\n")
+                for item in dbs:
+                    if item.get('key') and item.get('key') != "dummy":
+                        f.write(f"{item['url']}|||{item['key']}\n")
+                    else:
+                        f.write(f"{item['url']}\n")
+            
+            bot.answer_callback_query(call.id)
+            with open(filename, "rb") as doc:
+                bot.send_document(
+                    user_id, doc, 
+                    caption=f"📊 <b>Aapke Total Saved Firebases:</b> <code>{len(dbs)}</code>",
+                    reply_markup=get_main_keyboard(is_admin)
+                )
+
+    elif data == "get_referral":
+        bot_info = bot.get_me()
+        ref_link = f"https://t.me/{bot_info.username}?start=ref_{user_id}"
+        
+        bot.answer_callback_query(call.id)
+        ref_text = (
+            "🔗 <b>YOUR REFERRAL LINK</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>USER NAME:</b> @{call.from_user.username if call.from_user.username else 'No Username'}\n"
+            f"🆔 <b>USER ID:</b> <code>{user_id}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔗 <b>YOUR LINK:</b>\n"
+            f"<code>{ref_link}</code>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🎁 <b>EARN 10 CREDITS FOR EVERY VERIFIED REFERRAL</b>\n\n"
+            "💡 <i>Rule: Referred user ko official channel join karke rakhna hoga. Agar koi user channel leave karega, toh aapke refer kiye hue points minus kar liye jayenge!</i>"
+        )
+        bot.send_message(user_id, ref_text)
+
+    elif data == "help_menu":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            user_id,
+            "ℹ️ <b>HELP & RULES GUIDE</b>\n\n"
+            "1️⃣ <b>Subscription Rule:</b> Firebase extract karne ke liye 10 credits se 3 din ki subscription purchase karna zaroori hai.\n"
+            "2️⃣ <b>Channel Membership:</b> Official channel join rakhna compulsory hai.\n"
+            "3️⃣ <b>Referral Policy:</b> Har verified refer par 10 credits milte hain. Channel leave karne par credits deduct ho jayenge.\n"
+            "4️⃣ <b>Security:</b> All extracted data is safely saved in your private history."
+        )
+
+    elif data == "admin_download" and is_admin:
+        all_dbs = set()
+        all_data = load_json(CREDITS_FILE)
+        for u_info in all_data.values():
+            for db in u_info.get("my_databases", []):
+                if db.get('url'):
+                    all_dbs.add(db['url'])
+        
+        if not all_dbs:
+            bot.answer_callback_query(call.id, "⚠️ Database mein koi firebase nahi hai.", show_alert=True)
+            return
+        
+        filename = "all_admin_firebases.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("\n".join(sorted(all_dbs)))
+        bot.answer_callback_query(call.id)
+        with open(filename, "rb") as doc:
+            bot.send_document(user_id, doc, caption=f"📁 Total <b>{len(all_dbs)}</b> Unique Firebases Collected Across All Users!")
+
+    elif data == "admin_genkey" and is_admin:
+        bot.answer_callback_query(call.id)
+        bot.send_message(user_id, "🔑 Kitne credits ki key banani hai? Sirf number bhejein (jaise: <code>10</code>):")
+        bot.register_next_step_handler_by_chat_id(user_id, process_genkey)
+
+    elif data == "redeem_key":
+        bot.answer_callback_query(call.id)
+        bot.send_message(user_id, "🔑 Apni <b>License Key</b> yahan bhejein:")
+        bot.register_next_step_handler_by_chat_id(user_id, process_redeem)
+
+    elif data == "admin_broadcast" and is_admin:
+        bot.answer_callback_query(call.id)
+        bot.send_message(user_id, "📢 Jo message saare users ko bhejna hai, woh yahan forward ya type karein:")
+        bot.register_next_step_handler_by_chat_id(user_id, process_broadcast)
+
+    elif data == "system_status":
+        bot.answer_callback_query(call.id)
+        bot.send_message(user_id, "⚡ <b>System Status:</b> Operational 🟢\n🔒 <b>Security:</b> Fully Encrypted\n🌐 <b>Core:</b> Universal Engine Active")
+
+def process_extraction(message):
+    user_id = message.from_user.id
+    if not check_channel(user_id):
+        bot.send_message(user_id, "⚠️ Pehle channel join karein.")
+        return
+    
+    is_admin = (user_id == ADMIN_CHAT_ID)
+    if not is_admin and not has_active_sub(user_id):
+        bot.send_message(user_id, "❌ Active subscription required!")
+        return
+
+    text = message.text.strip() if message.text else ""
+    parsed_items = parse_links_bulk(text)
+    
+    if not parsed_items:
+        bot.send_message(user_id, "❌ <b>No Valid Firebase Found!</b>\n\nKripya sahi panel link ya text bhejein.", reply_markup=get_main_keyboard(is_admin))
+        return
+
+    u_data = get_user_data(user_id)
+    for idx, (url, key) in enumerate(parsed_items, 1):
+        total, online = check_firebase(url, key)
+        
+        res = (
+            f"✨ <b>FIREBASE EXTRACTED #{idx}</b> ✨\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔗 <b>URL:</b> <code>{url}</code>\n"
+            f"🔑 <b>Key:</b> <code>{key}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📱 <b>Total Connections:</b> <code>{total}</code>\n"
+            f"🟢 <b>Online Connections:</b> <code>{online}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        bot.send_message(user_id, res)
+
+        db_entry = {"url": url, "key": key}
+        if db_entry not in u_data["my_databases"]:
+            u_data["my_databases"].append(db_entry)
+            
+    update_user_data(user_id, u_data)
+    bot.send_message(user_id, f"✅ <b>Successfully Processed {len(parsed_items)} Firebase(s)!</b>", reply_markup=get_main_keyboard(is_admin))
+
+def process_genkey(message):
+    user_id = message.from_user.id
+    if user_id != ADMIN_CHAT_ID:
+        return
+    text = message.text.strip() if message.text else ""
+    if not text.isdigit():
+        bot.send_message(user_id, "❌ Kripya sirf valid number bhejein.")
+        return
+    
+    credits_val = int(text)
+    random_key = "FIRE-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
+    keys_data = load_json(KEYS_FILE)
+    keys_data[random_key] = credits_val
+    save_json(KEYS_FILE, keys_data)
+    
+    bot.send_message(
+        user_id,
+        f"✅ <b>License Key Generated Successfully!</b>\n\n"
+        f"🔑 Key: <code>{random_key}</code>\n"
+        f"💎 Credits: <code>{credits_val}</code>",
+        reply_markup=get_main_keyboard(True)
+    )
+
+def process_redeem(message):
+    user_id = message.from_user.id
+    text = message.text.strip() if message.text else ""
+    keys_data = load_json(KEYS_FILE)
+    
+    if text in keys_data:
+        creds = keys_data.pop(text)
+        save_json(KEYS_FILE, keys_data)
+        
+        u_data = get_user_data(user_id)
+        u_data["credits"] = u_data.get("credits", 0) + creds
+        update_user_data(user_id, u_data)
+        
+        bot.send_message(
+            user_id,
+            f"🎉 <b>Successfully Redeemed!</b>\n+{creds} Credits added to your account.",
+            reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID)
+        )
+        
+        admin_alert = (
+            "🔔 <b>NEW KEY REDEEMED!</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 User: `{message.from_user.first_name}`\n"
+            f"🆔 User ID: `{user_id}`\n"
+            f"🔑 Key: `{text}`\n"
+            f"💎 Credits Added: `+{creds}`\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        try:
+            bot.send_message(ADMIN_CHAT_ID, admin_alert)
+        except:
+            pass
+    else:
+        bot.send_message(user_id, "❌ Invalid ya already used key!", reply_markup=get_main_keyboard(user_id == ADMIN_CHAT_ID))
+
+def process_broadcast(message):
+    user_id = message.from_user.id
+    if user_id != ADMIN_CHAT_ID:
+        return
+    
+    all_data = load_json(CREDITS_FILE)
+    success, fail = 0, 0
+    for uid in all_data.keys():
+        try:
+            bot.copy_message(chat_id=int(uid), from_chat_id=user_id, message_id=message.message_id)
+            success += 1
+        except:
+            fail += 1
+            
+    bot.send_message(
+        user_id,
+        f"📢 <b>Broadcast Completed!</b>\n\n✅ Delivered: {success}\n❌ Fail: {fail}",
+        reply_markup=get_main_keyboard(True)
+    )
+
+if __name__ == '__main__':
+    threading.Thread(target=run_flask, daemon=True).start()
+    print("✨ Bot is running live with Telebot & Flask...")
+    bot.infinity_polling(skip_pending=True)
