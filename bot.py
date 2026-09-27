@@ -13,7 +13,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 #  🔧 CONFIG & TOKENS
 # ═══════════════════════════════════════════════════════════════
 BOT_TOKEN = "8632363521:AAHmUpYvXtViGysiVRkhXiII_2SxcBnorIw"
-CHANNEL_USERNAME = "@AapkaChannelUsername"  # Apna channel username yahan daalein
+CHANNEL_USERNAME = "@trickzone6"  # Apna channel username yahan daalein
 ADMIN_ID = 6755426755  # Aapki Admin ID
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
