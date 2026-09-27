@@ -2,6 +2,7 @@ import base64
 import random
 import string
 import re
+import os
 import threading
 from flask import Flask
 import telebot
@@ -402,7 +403,6 @@ def handle_text(message):
         user_states.pop(user_id, None)
 
 if __name__ == '__main__':
-    # Flask server ko alag thread mein start karo taaki Render ka port requirement poora ho jaye
     t = threading.Thread(target=run_flask)
     t.daemon = True
     t.start()
