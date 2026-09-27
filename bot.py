@@ -100,67 +100,57 @@ def parse_links_bulk(text):
         if not line or line.startswith("#"):
             continue
         
-        # 1. Gather all possible encoded strings or query parameters
-        param_matches = re.findall(r'[?&][a-zA-Z0-9_-]+=([A-Za-z0-9+/=_-]+)', line)
+        param_matches = re.findall(r'[?&][a-zA-Z0-9_-]+=([^&\s]+)', line)
         decoded_texts = [line]
         for match in param_matches:
+            decoded_texts.append(match)
             try:
                 raw = match.replace('-', '+').replace('_', '/')
                 raw += '=' * (-len(raw) % 4)
                 decoded_bytes = base64.b64decode(raw)
                 decoded = decoded_bytes.decode('utf-8', errors='ignore')
                 decoded_texts.append(decoded)
-                
-                # Double layer base64 check
-                if not decoded.startswith(('{', '[', 'http')) and re.match(r'^[A-Za-z0-9+/=]+$', decoded.strip()):
-                    try:
-                        d2 = base64.b64decode(decoded.strip()).decode('utf-8', errors='ignore')
-                        decoded_texts.append(d2)
-                    except:
-                        pass
             except:
                 pass
 
         found_any = False
         for text_block in decoded_texts:
-            # 2. Deep JSON/Dict recursion scanner
+            urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com[^\s<>"]*|https?://[a-zA-Z0-9.-]+\.firebasedatabase\.app[^\s<>"]*', text_block, re.IGNORECASE)
+            for u in urls:
+                u_clean = u.rstrip('/')
+                if not u_clean.startswith("http"):
+                    u_clean = "https://" + u_clean
+                if (u_clean, "dummy") not in [(x[0], x[1]) for x in parsed_results]:
+                    parsed_results.append((u_clean, "dummy"))
+                    found_any = True
+
             try:
                 data = json.loads(text_block)
                 def dig_json(obj):
                     nonlocal found_any
                     if isinstance(obj, dict):
-                        for k, v in obj.items():
-                            if isinstance(v, str) and ("firebase" in v.lower() or "rtdb" in v.lower() or "firebaseio.com" in v.lower() or "firebasedatabase.app" in v.lower()):
-                                clean_url = v.rstrip('/')
-                                if not clean_url.startswith("http"):
-                                    clean_url = "https://" + clean_url
-                                p_key = obj.get('key') or obj.get('secret') or obj.get('auth') or "dummy"
+                        p_url = obj.get('url', '') or obj.get('firebase', '') or obj.get('rtdb', '') or obj.get('link', '')
+                        p_key = obj.get('key', 'dummy') or obj.get('secret', 'dummy') or obj.get('auth', 'dummy') or "dummy"
+                        if p_url and isinstance(p_url, str):
+                            clean_url = p_url.rstrip('/')
+                            if not clean_url.startswith("http"):
+                                clean_url = "https://" + clean_url
+                            if "firebase" in clean_url.lower() or "rtdb" in clean_url.lower():
                                 if (clean_url, str(p_key)) not in [(x[0], x[1]) for x in parsed_results]:
                                     parsed_results.append((clean_url, str(p_key)))
                                     found_any = True
-                            elif isinstance(v, (dict, list)):
-                                dig_json(v)
+                        for val in obj.values():
+                            dig_json(val)
                     elif isinstance(obj, list):
                         for item in obj:
                             dig_json(item)
                 dig_json(data)
-                if found_any:
-                    continue
             except:
                 pass
-
-            # 3. Direct regex search for firebase domains
-            urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com|https?://[a-zA-Z0-9.-]+\.firebasedatabase\.app', text_block)
-            for u in urls:
-                u_clean = u.rstrip('/')
-                if (u_clean, "dummy") not in [(x[0], x[1]) for x in parsed_results]:
-                    parsed_results.append((u_clean, "dummy"))
-                    found_any = True
 
         if found_any:
             continue
 
-        # 4. Custom separator || format
         if '||' in line:
             parts = re.split(r'\|{2,}', line)
             url = parts[0].strip().rstrip('/')
@@ -171,13 +161,6 @@ def parse_links_bulk(text):
                 if (url, key) not in [(x[0], x[1]) for x in parsed_results]:
                     parsed_results.append((url, key))
                 continue
-
-        # 5. Plain URL fallback
-        if "firebaseio.com" in line or "firebasedatabase.app" in line or line.startswith("http"):
-            url = line.strip().rstrip('/')
-            if "firebase" in url.lower() or "rtdb" in url.lower():
-                if (url, "dummy") not in [(x[0], x[1]) for x in parsed_results]:
-                    parsed_results.append((url, "dummy"))
 
     return parsed_results
 
@@ -354,7 +337,7 @@ def callback_handler(call):
         bot.send_message(
             user_id,
             "📥 <b>SEND PANEL DATA OR LINKS</b>\n\n"
-            "<i>Aap kisi bhi panel ka link (Zenith, EdgeOne, etc.), Base64 string, ya direct links bhej sakte hain.</i>"
+            "<i>Aap kisi bhi type ka web panel link, Base64 string, ya direct links bhej sakte hain.</i>"
         )
         bot.register_next_step_handler_by_chat_id(user_id, process_extraction)
 
