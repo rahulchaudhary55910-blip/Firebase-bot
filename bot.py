@@ -4,6 +4,7 @@ import string
 import re
 import os
 import threading
+import datetime
 import requests
 from flask import Flask
 import telebot
@@ -13,7 +14,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 #  🔧 CONFIG & TOKENS
 # ═══════════════════════════════════════════════════════════════
 BOT_TOKEN = "8632363521:AAHmUpYvXtViGysiVRkhXiII_2SxcBnorIw"
-CHANNEL_USERNAME = "@trickzone6"  # Apna channel username yahan daalein
+CHANNEL_USERNAME = "@trickzone6"  # Official Channel Username
 ADMIN_ID = 6755426755  # Aapki Admin ID
 
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
@@ -21,7 +22,10 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 # 📊 Storage
 user_databases = {}          # user_id -> [{'url': ..., 'key': ...}]
 all_global_firebases = set() # Saare global firebases ka collection
-user_credits = {}            # user_id -> remaining extractions/credits
+user_credits = {}            # user_id -> credits balance
+user_subscriptions = {}      # user_id -> expiry datetime datetime object
+referred_users = {}          # user_id -> set of user_ids they referred
+user_referrer = {}           # user_id -> who referred them
 generated_keys = {}          # key -> credit amount
 active_users = set()         # Total unique users for broadcast
 user_states = {}             # Temporary state handler for text inputs
@@ -46,6 +50,7 @@ def get_main_keyboard(is_admin=False):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🚀 Extract From Web Panel", callback_data="extract_menu"),
+        InlineKeyboardButton("💳 Buy 3-Day Sub (10 Cr)", callback_data="buy_subscription"),
         InlineKeyboardButton("📊 My History & DB", callback_data="view_databases"),
         InlineKeyboardButton("🎁 Refer & Earn", callback_data="get_referral"),
         InlineKeyboardButton("🔑 Redeem Key", callback_data="redeem_key"),
@@ -61,7 +66,7 @@ def get_main_keyboard(is_admin=False):
     return markup
 
 # ═══════════════════════════════════════════════════════════════
-#  🔒 CHANNEL SUBSCRIPTION CHECK
+#  🔒 CHANNEL SUBSCRIPTION CHECK & LEAVE DETECTION
 # ═══════════════════════════════════════════════════════════════
 def check_channel_membership(user_id):
     if user_id == ADMIN_ID:
@@ -74,8 +79,34 @@ def check_channel_membership(user_id):
         pass
     return False
 
+def verify_and_update_referrals(user_id):
+    """Check if referred users are still in the channel. If left, deduct points."""
+    if user_id in referred_users:
+        current_refs = list(referred_users[user_id])
+        for ref_id in current_refs:
+            if not check_channel_membership(ref_id):
+                # User left the channel! Deduct points from referrer
+                referred_users[user_id].remove(ref_id)
+                user_credits[user_id] = max(0, user_credits.get(user_id, 0) - 10)
+                try:
+                    bot.send_message(
+                        user_id,
+                        "⚠️ <b>Referral Alert!</b>\n\n"
+                        f"Aapke ek referred user ne channel ({CHANNEL_USERNAME}) leave kar diya hai, isliye aapke <b>10 credits</b> minus ho gaye hain!"
+                    )
+                except:
+                    pass
+
+def has_active_subscription(user_id):
+    if user_id == ADMIN_ID:
+        return True
+    if user_id in user_subscriptions:
+        if datetime.datetime.now() < user_subscriptions[user_id]:
+            return True
+    return False
+
 # ═══════════════════════════════════════════════════════════════
-#  🔍 LIVE FIREBASE STATS CHECKER (Connections & Online Count)
+#  🔍 LIVE FIREBASE STATS CHECKER
 # ═══════════════════════════════════════════════════════════════
 def check_firebase_stats(url, key):
     total, online = 0, 0
@@ -196,12 +227,32 @@ def cmd_start(message):
     text_args = message.text.split()
     
     if user_id not in user_credits:
-        user_credits[user_id] = 5
+        user_credits[user_id] = 0  # Start with 0 credits
 
+    # Handle Referral System via Start Arguments
     if len(text_args) > 1 and text_args[1].isdigit():
         ref_id = int(text_args[1])
-        if ref_id != user_id:
-            user_credits[ref_id] = user_credits.get(ref_id, 5) + 3
+        if ref_id != user_id and user_id not in user_referrer:
+            # Check if new user has joined the channel
+            if check_channel_membership(user_id):
+                user_referrer[user_id] = ref_id
+                if ref_id not in referred_users:
+                    referred_users[ref_id] = set()
+                if user_id not in referred_users[ref_id]:
+                    referred_users[ref_id].add(user_id)
+                    user_credits[ref_id] = user_credits.get(ref_id, 0) + 10
+                    try:
+                        bot.send_message(
+                            ref_id,
+                            "🎉 <b>New Verified Referral!</b>\n"
+                            f"Aapke link se ek naye user ne join kiya hai aur channel par active hain.\n"
+                            "🎁 <b>+10 Credits</b> added to your account!"
+                        )
+                    except:
+                        pass
+
+    # Run check to verify if previously referred users left the channel
+    verify_and_update_referrals(user_id)
 
     if not check_channel_membership(user_id):
         join_kb = InlineKeyboardMarkup()
@@ -217,11 +268,14 @@ def cmd_start(message):
         return
 
     is_admin = (user_id == ADMIN_ID)
+    sub_status = "Lifetime (Admin)" if is_admin else ("Active 🟢" if has_active_subscription(user_id) else "Expired / None 🔴")
+    
     welcome_text = (
         "✨ <b>P R E M I U M   F I R E B A S E   H U B</b> ✨\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"👋 <i>Welcome back, {message.from_user.first_name}!</i>\n\n"
-        f"💎 <b>Aapke Available Credits:</b> <code>{'Unlimited (Admin)' if is_admin else user_credits[user_id]}</code>\n"
+        f"💳 <b>Aapke Credits:</b> <code>{user_credits[user_id]} Credits</code>\n"
+        f"⏳ <b>Subscription Status:</b> <code>{sub_status}</code>\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         "<i>Select an option from the dashboard below:</i>"
     )
@@ -239,13 +293,41 @@ def callback_handler(call):
         else:
             bot.answer_callback_query(call.id, "❌ Aapne abhi tak channel join nahi kiya hai!", show_alert=True)
 
+    elif data == "buy_subscription":
+        if not check_channel_membership(user_id):
+            bot.answer_callback_query(call.id, "❌ Pehle channel join karein!", show_alert=True)
+            return
+        
+        current_credits = user_credits.get(user_id, 0)
+        if current_credits < 10:
+            bot.answer_callback_query(call.id, "❌ Aapke paas kam se kam 10 credits hone chahiye! Refer karke ya key redeem karke credits earn karein.", show_alert=True)
+            return
+
+        # Deduct 10 credits and give 3 days subscription
+        user_credits[user_id] -= 10
+        if user_id in user_subscriptions and datetime.datetime.now() < user_subscriptions[user_id]:
+            user_subscriptions[user_id] += datetime.timedelta(days=3)
+        else:
+            user_subscriptions[user_id] = datetime.datetime.now() + datetime.timedelta(days=3)
+
+        bot.answer_callback_query(call.id, "🎉 3-Day Subscription Activated Successfully!")
+        bot.send_message(
+            user_id,
+            "🎉 <b>SUBSCRIPTION PURCHASED!</b>\n\n"
+            "✅ <b>Plan:</b> 3 Days Unlimited Access\n"
+            "📉 <b>Credits Deducted:</b> <code>-10 Credits</code>\n"
+            f"⏳ <b>Expiry:</b> <code>{user_subscriptions[user_id].strftime('%Y-%m-%d %H:%M:%S')}</code>",
+            reply_markup=get_main_keyboard(user_id == ADMIN_ID)
+        )
+
     elif data == "extract_menu":
         if not check_channel_membership(user_id):
             bot.answer_callback_query(call.id, "❌ Pehle channel join karein!", show_alert=True)
             return
+        
         is_admin = (user_id == ADMIN_ID)
-        if not is_admin and user_credits.get(user_id, 0) <= 0:
-            bot.answer_callback_query(call.id, "❌ Aapke credits khatam ho chuke hain! Key redeem karein ya refer karein.", show_alert=True)
+        if not is_admin and not has_active_subscription(user_id):
+            bot.answer_callback_query(call.id, "❌ Aapke paas active subscription nahi hai! Pehle 10 credits se 3 din ki subscription buy karein.", show_alert=True)
             return
             
         user_states[user_id] = "waiting_for_input"
@@ -253,8 +335,7 @@ def callback_handler(call):
         bot.send_message(
             user_id,
             "📥 <b>SEND PANEL DATA OR LINKS</b>\n\n"
-            "<i>Aap Base64 encoded string, ?s=, ?m= formats, web panel text, ya direct links bhej sakte hain.</i>\n"
-            "⚡ <i>Normal users ek baar mein max 5 links bhej sakte hain.</i>"
+            "<i>Aap Base64 encoded string, ?s=, ?m= formats, web panel text, ya direct links bhej sakte hain.</i>"
         )
 
     elif data == "view_databases":
@@ -284,23 +365,33 @@ def callback_handler(call):
     elif data == "get_referral":
         bot_info = bot.get_me()
         ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
+        completed_refs = len(referred_users.get(user_id, set()))
+        
         bot.answer_callback_query(call.id)
-        bot.send_message(
-            user_id,
-            "🎁 <b>REFERRAL PROGRAM & RULES</b>\n\n"
-            "Apne dosto ko apna unique link share karein. Har naye user ke join karne par aapko <b>+3 Extra Credits</b> milenge!\n\n"
-            f"🔗 <b>Your Link:</b>\n<code>{ref_link}</code>"
+        ref_text = (
+            "🔗 <b>YOUR REFERRAL LINK</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>USER NAME:</b> @{call.from_user.username if call.from_user.username else 'No Username'}\n"
+            f"🆔 <b>USER ID:</b> <code>{user_id}</code>\n"
+            f"✅ <b>COMPLETED:</b> <code>{completed_refs}</code>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🔗 <b>YOUR LINK:</b>\n"
+            f"<code>{ref_link}</code>\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🎁 <b>EARN 10 CREDITS FOR EVERY VERIFIED REFERRAL</b>\n\n"
+            "💡 <i>Rule: Referred user ko official channel join karke rakhna hoga. Agar koi user channel leave karega, toh aapke refer kiye hue points minus kar liye jayenge!</i>"
         )
+        bot.send_message(user_id, ref_text)
 
     elif data == "help_menu":
         bot.answer_callback_query(call.id)
         bot.send_message(
             user_id,
             "ℹ️ <b>HELP & RULES GUIDE</b>\n\n"
-            "1️⃣ <b>Subscription:</b> Bot use karne ke liye official channel join rakhna zaroori hai.\n"
-            "2️⃣ <b>Extraction Limit:</b> Normal users ek baar mein maximum 5 links tak process kar sakte hain.\n"
-            "3️⃣ <b>Referral:</b> Link share karke apne credits badhayein.\n"
-            "4️⃣ <b>Security:</b> Har extracted firebase automatically secure database mein log ho jata hai."
+            "1️⃣ <b>Subscription Rule:</b> Firebase extract karne ke liye 10 credits se 3 din ki subscription purchase karna zaroori hai.\n"
+            "2️⃣ <b>Channel Membership:</b> Official channel join rakhna compulsory hai.\n"
+            "3️⃣ <b>Referral Policy:</b> Har verified refer par 10 credits milte hain. Channel leave karne par credits deduct ho jayenge.\n"
+            "4️⃣ <b>Security:</b> All extracted data is safely saved in your private history."
         )
 
     elif data == "admin_download":
@@ -368,11 +459,13 @@ def handle_text(message):
     is_admin = (user_id == ADMIN_ID)
 
     if state == "waiting_for_input":
+        if not is_admin and not has_active_subscription(user_id):
+            bot.send_message(user_id, "❌ Aapke paas active subscription nahi hai! Pehle 10 credits se 3 din ki subscription buy karein.", reply_markup=get_main_keyboard(is_admin))
+            user_states.pop(user_id, None)
+            return
+
         lines = text.splitlines()
         extracted_results = []
-        
-        if not is_admin and len(lines) > 5:
-            lines = lines[:5]
 
         for line in lines:
             parsed = parse_panel_data(line)
@@ -384,15 +477,10 @@ def handle_text(message):
             if user_id not in user_databases:
                 user_databases[user_id] = []
             
-            new_added = 0
             for item in extracted_results:
                 all_global_firebases.add(item['url'])
                 if not any(db['url'] == item['url'] for db in user_databases[user_id]):
                     user_databases[user_id].append(item)
-                    new_added += 1
-
-            if not is_admin:
-                user_credits[user_id] = max(0, user_credits[user_id] - 1)
 
             for idx, item in enumerate(extracted_results, 1):
                 total, online = check_firebase_stats(item['url'], item['key'])
@@ -409,11 +497,7 @@ def handle_text(message):
                 )
                 bot.send_message(user_id, res)
 
-            final_msg = f"✅ <b>Successfully Processed {len(extracted_results)} Firebase(s)!</b>"
-            if not is_admin:
-                final_msg += f"\n📉 <b>Remaining Credits:</b> <code>{user_credits[user_id]}</code>"
-            
-            bot.send_message(user_id, final_msg, reply_markup=get_main_keyboard(is_admin))
+            bot.send_message(user_id, f"✅ <b>Successfully Processed {len(extracted_results)} Firebase(s)!</b>", reply_markup=get_main_keyboard(is_admin))
         else:
             bot.send_message(user_id, "❌ Koi valid Firebase URL ya panel data nahi mila.", reply_markup=get_main_keyboard(is_admin))
         user_states.pop(user_id, None)
@@ -442,14 +526,12 @@ def handle_text(message):
             credits_added = generated_keys.pop(text)
             user_credits[user_id] = user_credits.get(user_id, 0) + credits_added
             
-            # 🎉 Send success message to the user
             bot.send_message(
                 user_id,
                 f"🎉 <b>Successfully Redeemed!</b>\n+{credits_added} Credits added to your account.",
                 reply_markup=get_main_keyboard(is_admin)
             )
             
-            # 📢 Notify Admin about the key redemption
             user_name = message.from_user.first_name
             username = f"@{message.from_user.username}" if message.from_user.username else "No Username"
             admin_notification = (
@@ -463,7 +545,7 @@ def handle_text(message):
             )
             try:
                 bot.send_message(ADMIN_ID, admin_notification)
-            except Exception:
+            except:
                 pass
         else:
             bot.send_message(user_id, "❌ Invalid ya already used key!", reply_markup=get_main_keyboard(is_admin))
@@ -492,5 +574,5 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     
-    print("✨ Ultimate Premium Firebase Bot with Admin Alerts is running...")
+    print("✨ Ultimate Premium Firebase Bot with Strict Subscription & Referrals is running...")
     bot.infinity_polling(skip_pending=True)
