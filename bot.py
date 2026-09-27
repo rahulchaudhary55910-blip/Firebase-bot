@@ -4,9 +4,10 @@ import string
 import re
 import os
 import threading
+import requests
 from flask import Flask
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 
 # ═══════════════════════════════════════════════════════════════
 #  🔧 CONFIG & TOKENS
@@ -18,12 +19,12 @@ ADMIN_ID = 6755426755  # Aapki Admin ID
 bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 
 # 📊 Storage
-user_databases = {}      # user_id -> [list of extracted firebases]
+user_databases = {}          # user_id -> [{'url': ..., 'key': ...}]
 all_global_firebases = set() # Saare global firebases ka collection
-user_credits = {}        # user_id -> remaining extractions/credits
-generated_keys = {}      # key -> credit amount
-active_users = set()     # Total unique users for broadcast
-user_states = {}         # Temporary state handler for text inputs
+user_credits = {}            # user_id -> remaining extractions/credits
+generated_keys = {}          # key -> credit amount
+active_users = set()         # Total unique users for broadcast
+user_states = {}             # Temporary state handler for text inputs
 
 # ═══════════════════════════════════════════════════════════════
 #  🌐 DUMMY WEB SERVER FOR RENDER (Port Binding Fix)
@@ -74,7 +75,36 @@ def check_channel_membership(user_id):
     return False
 
 # ═══════════════════════════════════════════════════════════════
-#  🔗 UNIVERSAL LINK & PANEL PARSER
+#  🔍 LIVE FIREBASE STATS CHECKER (Connections & Online Count)
+# ═══════════════════════════════════════════════════════════════
+def check_firebase_stats(url, key):
+    total, online = 0, 0
+    try:
+        clean_url = url.rstrip('/')
+        clients_url = f"{clean_url}/clients.json"
+        if key and key != "dummy":
+            clients_url += f"?auth={key}"
+        
+        res = requests.get(clients_url, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            if isinstance(data, dict) and data:
+                total = len(data)
+                online = sum(1 for d in data.values() if isinstance(d, dict) and d.get("status"))
+        elif res.status_code == 401 and key and key != "dummy":
+            # Try without auth if 401
+            res2 = requests.get(f"{clean_url}/clients.json", timeout=6)
+            if res2.status_code == 200:
+                data2 = res2.json()
+                if isinstance(data2, dict) and data2:
+                    total = len(data2)
+                    online = sum(1 for d in data2.values() if isinstance(d, dict) and d.get("status"))
+    except:
+        pass
+    return total, online
+
+# ═══════════════════════════════════════════════════════════════
+#  🔗 ADVANCED CLEAN PARSER FOR URL & KEY
 # ═══════════════════════════════════════════════════════════════
 def parse_panel_data(line):
     line = line.strip()
@@ -126,14 +156,15 @@ def parse_panel_data(line):
                         sub_urls = re.findall(r'https?://[^\s<>"]+', decoded)
                         for su in sub_urls:
                             if "firebase" in su.lower() or "rtdb" in su.lower():
-                                extracted_entries.append((su.rstrip(".,;:?!'\""), "dummy"))
+                                clean_su = su.split('|||')[0].rstrip(".,;:?!'\"")
+                                extracted_entries.append((clean_su, "dummy"))
                 except:
                     pass
 
         if '|||' in line:
             parts = line.split('|||')
             url = parts[0].strip()
-            key = parts[1].strip() if len(parts) > 1 else "dummy"
+            key = parts[1].strip() if len(parts) > 1 and parts[1].strip() != parts[0].strip() else "dummy"
             if url:
                 if not url.startswith("http"):
                     url = "https://" + url
@@ -142,13 +173,19 @@ def parse_panel_data(line):
         general_urls = re.findall(r'https?://[^\s<>"]+', line)
         for u in general_urls:
             if "firebase" in u.lower() or "rtdb" in u.lower():
-                clean_url = u.rstrip(".,;:?!'\"")
+                clean_url = u.split('|||')[0].rstrip(".,;:?!'\"")
                 if not any(entry[0] == clean_url for entry in extracted_entries):
                     extracted_entries.append((clean_url, "dummy"))
     except:
         pass
 
-    return extracted_entries
+    final_clean = []
+    for url, key in extracted_entries:
+        if "firebase" in url.lower() or "rtdb" in url.lower():
+            if not any(e['url'] == url for e in final_clean):
+                final_clean.append({'url': url, 'key': key})
+
+    return final_clean
 
 # ═══════════════════════════════════════════════════════════════
 #  🚀 BOT COMMANDS & FLOW
@@ -218,20 +255,33 @@ def callback_handler(call):
             user_id,
             "📥 <b>SEND PANEL DATA OR LINKS</b>\n\n"
             "<i>Aap Base64 encoded string, ?s=, ?m= formats, web panel text, ya direct links bhej sakte hain.</i>\n"
-            "⚡ <i>Normal users ek baar mein upyog kar sakte hain.</i>"
+            "⚡ <i>Normal users ek baar mein max 5 links bhej sakte hain.</i>"
         )
 
     elif data == "view_databases":
         dbs = user_databases.get(user_id, [])
         if not dbs:
-            text = "📊 <b>HISTORY & DATABASES</b>\n\n⚠️ Aapne abhi tak koi bhi Firebase extract nahi kiya hai."
+            text = "📊 <b>YOUR HISTORY & DATABASES</b>\n\n⚠️ Aapne abhi tak koi bhi Firebase extract nahi kiya hai."
+            bot.answer_callback_query(call.id)
+            bot.send_message(user_id, text, reply_markup=get_main_keyboard(user_id == ADMIN_ID))
         else:
-            text = "📊 <b>YOUR EXTRACTED FIREBASE HISTORY:</b>\n\n"
-            for idx, db in enumerate(dbs, 1):
-                online = (idx * 4) % 18 + 2
-                text += f"<b>{idx}.</b> <code>{db}</code>\n🟢 <b>Active Devices:</b> <code>{online} Online</code>\n\n"
-        bot.answer_callback_query(call.id)
-        bot.send_message(user_id, text, reply_markup=get_main_keyboard(user_id == ADMIN_ID))
+            # Send file containing user's personal extracted databases
+            filename = f"my_firebases_{user_id}.txt"
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(f"# Your Extracted Firebases — User ID: {user_id}\n\n")
+                for item in dbs:
+                    if item['key'] and item['key'] != "dummy":
+                        f.write(f"{item['url']}|||{item['key']}\n")
+                    else:
+                        f.write(f"{item['url']}\n")
+            
+            bot.answer_callback_query(call.id)
+            doc = FSInputFile(filename)
+            bot.send_document(
+                user_id, doc, 
+                caption=f"📊 <b>Aapke Total Saved Firebases:</b> <code>{len(dbs)}</code>",
+                reply_markup=get_main_keyboard(user_id == ADMIN_ID)
+            )
 
     elif data == "get_referral":
         bot_info = bot.get_me()
@@ -267,10 +317,11 @@ def callback_handler(call):
             f.write("\n".join(sorted(all_global_firebases)))
         bot.answer_callback_query(call.id)
         with open(filename, "rb") as doc:
-            bot.send_document(user_id, doc, caption=f"📁 Total <b>{len(all_global_firebases)}</b> Unique Firebases Collected!")
+            bot.send_document(user_id, doc, caption=f"📁 Total <b>{len(all_global_firebases)}</b> Unique Firebases Collected Across All Users!")
 
     elif data == "admin_genkey":
         if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "❌ Access Denied!", show_alert=True)
             return
         user_states[user_id] = "waiting_for_key_gen"
         bot.answer_callback_query(call.id)
@@ -283,6 +334,7 @@ def callback_handler(call):
 
     elif data == "admin_broadcast":
         if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "❌ Access Denied!", show_alert=True)
             return
         user_states[user_id] = "waiting_for_broadcast"
         bot.answer_callback_query(call.id)
@@ -326,36 +378,52 @@ def handle_text(message):
 
         for line in lines:
             parsed = parse_panel_data(line)
-            for url, key in parsed:
-                extracted_results.append(url)
+            for item in parsed:
+                if not any(e['url'] == item['url'] for e in extracted_results):
+                    extracted_results.append(item)
 
         if extracted_results:
             if user_id not in user_databases:
                 user_databases[user_id] = []
             
             new_added = 0
-            for url in extracted_results:
-                all_global_firebases.add(url)
-                if url not in user_databases[user_id]:
-                    user_databases[user_id].append(url)
+            for item in extracted_results:
+                all_global_firebases.add(item['url'])
+                if not any(db['url'] == item['url'] for db in user_databases[user_id]):
+                    user_databases[user_id].append(item)
                     new_added += 1
 
             if not is_admin:
                 user_credits[user_id] = max(0, user_credits[user_id] - 1)
 
-            res = f"✅ <b>Successfully Extracted {len(extracted_results)} Firebase(s)!</b>\n\n"
-            for url in extracted_results:
-                res += f"🔗 <code>{url}</code>\n"
+            # Send premium formatted response
+            for idx, item in enumerate(extracted_results, 1):
+                total, online = check_firebase_stats(item['url'], item['key'])
+                
+                res = (
+                    f"✨ <b>FIREBASE EXTRACTED #{idx}</b> ✨\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🔗 <b>URL:</b> <code>{item['url']}</code>\n"
+                    f"🔑 <b>Key:</b> <code>{item['key']}</code>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"📱 <b>Total Connections:</b> <code>{total}</code>\n"
+                    f"🟢 <b>Online Connections:</b> <code>{online}</code>\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                )
+                bot.send_message(user_id, res)
+
+            final_msg = f"✅ <b>Successfully Processed {len(extracted_results)} Firebase(s)!</b>"
             if not is_admin:
-                res += f"\n📉 <b>Remaining Credits:</b> <code>{user_credits[user_id]}</code>"
+                final_msg += f"\n📉 <b>Remaining Credits:</b> <code>{user_credits[user_id]}</code>"
             
-            bot.send_message(user_id, res, reply_markup=get_main_keyboard(is_admin))
+            bot.send_message(user_id, final_msg, reply_markup=get_main_keyboard(is_admin))
         else:
             bot.send_message(user_id, "❌ Koi valid Firebase URL ya panel data nahi mila.", reply_markup=get_main_keyboard(is_admin))
         user_states.pop(user_id, None)
 
     elif state == "waiting_for_key_gen":
         if user_id != ADMIN_ID:
+            user_states.pop(user_id, None)
             return
         if not text.isdigit():
             bot.send_message(user_id, "❌ Kripya sirf valid number bhejein.")
@@ -387,6 +455,7 @@ def handle_text(message):
 
     elif state == "waiting_for_broadcast":
         if user_id != ADMIN_ID:
+            user_states.pop(user_id, None)
             return
         success, fail = 0, 0
         for uid in active_users:
@@ -407,6 +476,5 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     
-    print("✨ Ultimate Premium Firebase Bot with Web Server is running successfully...")
+    print("✨ Ultimate Premium Firebase Bot with Stats & Separate UI is running...")
     bot.infinity_polling(skip_pending=True)
-    
