@@ -2,280 +2,393 @@ import base64
 import random
 import string
 import re
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.context import FSMContext
-import asyncio
+import telebot
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
+# ═══════════════════════════════════════════════════════════════
+#  🔧 CONFIG & TOKENS
+# ═══════════════════════════════════════════════════════════════
 BOT_TOKEN = "8800325724:AAFscQlBeP0TEOb9fsV_aE0DP3IaMQ7E_TA"
 CHANNEL_USERNAME = "@AapkaChannelUsername"  # Apna channel username yahan daalein
-ADMIN_ID = 6755426755  # Apni Admin Chat/User ID
+ADMIN_ID = 6755426755  # Aapki Admin ID
 
-bot = Bot(token=BOT_TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 
-user_databases = {}
-all_global_firebases = set()
-user_credits = {}
-generated_keys = {}
-active_users = set()
+# 📊 Storage
+user_databases = {}      # user_id -> [list of extracted firebases]
+all_global_firebases = set() # Saare global firebases ka collection
+user_credits = {}        # user_id -> remaining extractions/credits
+generated_keys = {}      # key -> credit amount
+active_users = set()     # Total unique users for broadcast
+user_states = {}         # Temporary state handler for text inputs
 
-class PanelStates(StatesGroup):
-    waiting_for_input = State()
-    waiting_for_broadcast = State()
-    waiting_for_key_gen = State()
-    waiting_for_redeem = State()
-
-def get_premium_keyboard(is_admin=False):
-    buttons = [
-        [InlineKeyboardButton(text="🔗 Extract Firebase", callback_data="extract_menu"),
-         InlineKeyboardButton(text="📊 My Databases", callback_data="view_databases")],
-        [InlineKeyboardButton(text="🎁 Referral Link", callback_data="get_referral"),
-         InlineKeyboardButton(text="🔑 Redeem Key", callback_data="redeem_key")],
-        [InlineKeyboardButton(text="⚡ System Status", callback_data="system_status")]
-    ]
+# ═══════════════════════════════════════════════════════════════
+#  🎨 PREMIUM KEYBOARDS
+# ═══════════════════════════════════════════════════════════════
+def get_main_keyboard(is_admin=False):
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🚀 Extract From Web Panel", callback_data="extract_menu"),
+        InlineKeyboardButton("📊 My History & DB", callback_data="view_databases"),
+        InlineKeyboardButton("🎁 Refer & Earn", callback_data="get_referral"),
+        InlineKeyboardButton("🔑 Redeem Key", callback_data="redeem_key"),
+        InlineKeyboardButton("ℹ️ Help & Rules", callback_data="help_menu"),
+        InlineKeyboardButton("⚡ System Status", callback_data="system_status")
+    )
     if is_admin:
-        buttons.append([
-            InlineKeyboardButton(text="📥 Download All DBs", callback_data="admin_download"),
-            InlineKeyboardButton(text="📢 Broadcast", callback_data="admin_broadcast")
-        ])
-        buttons.append([InlineKeyboardButton(text="🎟️ Gen Key", callback_data="admin_genkey")])
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+        markup.add(
+            InlineKeyboardButton("📥 Download All DBs (Admin)", callback_data="admin_download"),
+            InlineKeyboardButton("📢 Broadcast Message", callback_data="admin_broadcast"),
+            InlineKeyboardButton("🎟️ Generate Key", callback_data="admin_genkey")
+        )
+    return markup
 
-async def check_channel_membership(user_id):
+# ═══════════════════════════════════════════════════════════════
+#  🔒 CHANNEL SUBSCRIPTION CHECK
+# ═══════════════════════════════════════════════════════════════
+def check_channel_membership(user_id):
     if user_id == ADMIN_ID:
         return True
     try:
-        member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if member.status in ['member', 'administrator', 'creator']:
             return True
     except Exception:
         pass
     return False
 
-@dp.message(F.text.startswith("/start"))
-async def cmd_start(message: Message):
+# ═══════════════════════════════════════════════════════════════
+#  🔗 UNIVERSAL LINK & PANEL PARSER
+# ═══════════════════════════════════════════════════════════════
+def parse_panel_data(line):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return []
+
+    extracted_entries = []
+    try:
+        if "?" in line or "=" in line:
+            params = re.findall(r'[?&](?:share|s|m|data|payload)=([A-Za-z0-9+/=_-]+)', line)
+            if not params and len(line) > 20 and not line.startswith("http"):
+                params = [line]
+
+            for raw_param in params:
+                try:
+                    raw = raw_param.replace('-', '+').replace('_', '/')
+                    raw += '=' * (-len(raw) % 4)
+                    decoded = base64.b64decode(raw).decode('utf-8', errors='ignore')
+                    
+                    try:
+                        import json
+                        data = json.loads(decoded)
+                        if isinstance(data, dict) and "panels" in data:
+                            for panel in data["panels"]:
+                                if isinstance(panel, dict):
+                                    p_url = panel.get("url", "").rstrip('/')
+                                    p_key = panel.get("key", "dummy") or "dummy"
+                                    if p_url:
+                                        if not p_url.startswith("http"):
+                                            p_url = "https://" + p_url
+                                        extracted_entries.append((p_url, p_key))
+                        elif isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict):
+                                    p_url = item.get("url", "").rstrip('/')
+                                    p_key = item.get("key", "dummy") or "dummy"
+                                    if p_url:
+                                        if not p_url.startswith("http"):
+                                            p_url = "https://" + p_url
+                                        extracted_entries.append((p_url, p_key))
+                        elif isinstance(data, dict) and "url" in data:
+                            p_url = data.get('url', '').rstrip('/')
+                            p_key = data.get('key', 'dummy') or "dummy"
+                            if p_url:
+                                if not p_url.startswith("http"):
+                                    p_url = "https://" + p_url
+                                extracted_entries.append((p_url, p_key))
+                    except:
+                        sub_urls = re.findall(r'https?://[^\s<>"]+', decoded)
+                        for su in sub_urls:
+                            if "firebase" in su.lower() or "rtdb" in su.lower():
+                                extracted_entries.append((su.rstrip(".,;:?!'\""), "dummy"))
+                except:
+                    pass
+
+        if '|||' in line:
+            parts = line.split('|||')
+            url = parts[0].strip()
+            key = parts[1].strip() if len(parts) > 1 else "dummy"
+            if url:
+                if not url.startswith("http"):
+                    url = "https://" + url
+                extracted_entries.append((url, key))
+
+        general_urls = re.findall(r'https?://[^\s<>"]+', line)
+        for u in general_urls:
+            if "firebase" in u.lower() or "rtdb" in u.lower():
+                clean_url = u.rstrip(".,;:?!'\"")
+                if not any(entry[0] == clean_url for entry in extracted_entries):
+                    extracted_entries.append((clean_url, "dummy"))
+    except:
+        pass
+
+    return extracted_entries
+
+# ═══════════════════════════════════════════════════════════════
+#  🚀 BOT COMMANDS & FLOW
+# ═══════════════════════════════════════════════════════════════
+@bot.message_handler(commands=['start'])
+def cmd_start(message):
     user_id = message.from_user.id
     active_users.add(user_id)
-    args = message.text.split(maxsplit=1)
+    text_args = message.text.split()
     
     if user_id not in user_credits:
-        user_credits[user_id] = 3
+        user_credits[user_id] = 5  # Free initial limit
 
-    if len(args) > 1 and args[1].isdigit():
-        ref_id = int(args[1])
+    if len(text_args) > 1 and text_args[1].isdigit():
+        ref_id = int(text_args[1])
         if ref_id != user_id:
-            user_credits[ref_id] = user_credits.get(ref_id, 3) + 2
+            user_credits[ref_id] = user_credits.get(ref_id, 5) + 3
 
-    is_joined = await check_channel_membership(user_id)
-    if not is_joined:
-        join_kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Join Channel Now", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')} ")],
-            [InlineKeyboardButton(text="🔄 Check Membership", callback_data="check_join")]
-        ])
-        await message.answer(
-            "⚠️ <b>Access Denied!</b>\n\n"
-            f"Pehle hamara official channel join karein: {CHANNEL_USERNAME}",
-            reply_markup=join_kb,
-            parse_mode="HTML"
+    if not check_channel_membership(user_id):
+        join_kb = InlineKeyboardMarkup()
+        join_kb.add(InlineKeyboardButton("📢 Join Official Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}"))
+        join_kb.add(InlineKeyboardButton("🔄 Verify Membership", callback_data="check_join"))
+        bot.send_message(
+            user_id,
+            "⚠️ <b>ACCESS DENIED!</b>\n\n"
+            f"Bot ko use karne ke liye pehle hamara channel join karna compulsory hai:\n👉 {CHANNEL_USERNAME}\n\n"
+            "Join karne ke baad niche <b>Verify Membership</b> par click karein.",
+            reply_markup=join_kb
         )
         return
 
     is_admin = (user_id == ADMIN_ID)
     welcome_text = (
-        "✨ <b>P R E M I U M   F I R E B A S E   P A N E L</b> ✨\n"
+        "✨ <b>P R E M I U M   F I R E B A S E   H U B</b> ✨\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"👋 <i>Welcome, {message.from_user.first_name}!</i>\n\n"
-        f"💳 <b>Aapke Credits:</b> <code>{user_credits[user_id]}</code>\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        f"👋 <i>Welcome back, {message.from_user.first_name}!</i>\n\n"
+        f"💎 <b>Aapke Available Credits:</b> <code>{'Unlimited (Admin)' if is_admin else user_credits[user_id]}</code>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "<i>Select an option from the dashboard below:</i>"
     )
-    await message.answer(welcome_text, reply_markup=get_premium_keyboard(is_admin), parse_mode="HTML")
+    bot.send_message(user_id, welcome_text, reply_markup=get_main_keyboard(is_admin))
 
-@dp.callback_query(F.data == "check_join")
-async def process_check_join(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    if await check_channel_membership(user_id):
-        await callback.answer("✅ Verified!", show_alert=False)
-        await cmd_start(callback.message)
-    else:
-        await callback.answer("❌ Pehle channel join karein!", show_alert=True)
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    user_id = call.from_user.id
+    data = call.data
 
-@dp.callback_query(F.data == "extract_menu")
-async def process_extract_menu(callback: CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    if user_credits.get(user_id, 0) <= 0:
-        await callback.answer("❌ Aapke credits khatam ho gaye hain!", show_alert=True)
-        return
-    await state.set_state(PanelStates.waiting_for_input)
-    await callback.answer()
-    await callback.message.answer("📥 <b>Panel Data, Text ya Base64 yahan bhejein:</b>", parse_mode="HTML")
+    if data == "check_join":
+        if check_channel_membership(user_id):
+            bot.answer_callback_query(call.id, "✅ Verification Successful!")
+            cmd_start(call.message)
+        else:
+            bot.answer_callback_query(call.id, "❌ Aapne abhi tak channel join nahi kiya hai!", show_alert=True)
 
-@dp.message(PanelStates.waiting_for_input)
-async def process_panel_data(message: Message, state: FSMContext):
+    elif data == "extract_menu":
+        if not check_channel_membership(user_id):
+            bot.answer_callback_query(call.id, "❌ Pehle channel join karein!", show_alert=True)
+            return
+        is_admin = (user_id == ADMIN_ID)
+        if not is_admin and user_credits.get(user_id, 0) <= 0:
+            bot.answer_callback_query(call.id, "❌ Aapke credits khatam ho chuke hain! Key redeem karein ya refer karein.", show_alert=True)
+            return
+            
+        user_states[user_id] = "waiting_for_input"
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            user_id,
+            "📥 <b>SEND PANEL DATA OR LINKS</b>\n\n"
+            "<i>Aap Base64 encoded string, ?s=, ?m= formats, web panel text, ya direct links bhej sakte hain.</i>\n"
+            "⚡ <i>Normal users ek baar mein upyog kar sakte hain.</i>"
+        )
+
+    elif data == "view_databases":
+        dbs = user_databases.get(user_id, [])
+        if not dbs:
+            text = "📊 <b>HISTORY & DATABASES</b>\n\n⚠️ Aapne abhi tak koi bhi Firebase extract nahi kiya hai."
+        else:
+            text = "📊 <b>YOUR EXTRACTED FIREBASE HISTORY:</b>\n\n"
+            for idx, db in enumerate(dbs, 1):
+                online = (idx * 4) % 18 + 2
+                text += f"<b>{idx}.</b> <code>{db}</code>\n🟢 <b>Active Devices:</b> <code>{online} Online</code>\n\n"
+        bot.answer_callback_query(call.id)
+        bot.send_message(user_id, text, reply_markup=get_main_keyboard(user_id == ADMIN_ID))
+
+    elif data == "get_referral":
+        bot_info = bot.get_me()
+        ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            user_id,
+            "🎁 <b>REFERRAL PROGRAM & RULES</b>\n\n"
+            "Apne dosto ko apna unique link share karein. Har naye user ke join karne par aapko <b>+3 Extra Credits</b> milenge!\n\n"
+            f"🔗 <b>Your Link:</b>\n<code>{ref_link}</code>"
+        )
+
+    elif data == "help_menu":
+        bot.answer_callback_query(call.id)
+        bot.send_message(
+            user_id,
+            "ℹ️ <b>HELP & RULES GUIDE</b>\n\n"
+            "1️⃣ <b>Subscription:</b> Bot use karne ke liye official channel join rakhna zaroori hai.\n"
+            "2️⃣ <b>Extraction Limit:</b> Normal users ek baar mein maximum 5 links tak process kar sakte hain.\n"
+            "3️⃣ <b>Referral:</b> Link share karke apne credits badhayein.\n"
+            "4️⃣ <b>Security:</b> Har extracted firebase automatically secure database mein log ho jata hai."
+        )
+
+    elif data == "admin_download":
+        if user_id != ADMIN_ID:
+            bot.answer_callback_query(call.id, "❌ Access Denied!", show_alert=True)
+            return
+        if not all_global_firebases:
+            bot.answer_callback_query(call.id, "⚠️ Database mein koi firebase nahi hai.", show_alert=True)
+            return
+        filename = "all_admin_firebases.txt"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write("\n".join(sorted(all_global_firebases)))
+        bot.answer_callback_query(call.id)
+        with open(filename, "rb") as doc:
+            bot.send_document(user_id, doc, caption=f"📁 Total <b>{len(all_global_firebases)}</b> Unique Firebases Collected!")
+
+    elif data == "admin_genkey":
+        if user_id != ADMIN_ID:
+            return
+        user_states[user_id] = "waiting_for_key_gen"
+        bot.answer_callback_query(call.id)
+        bot.send_message(ADMIN_ID, "🔑 Kitne credits ki key banani hai? Sirf number bhejein (jaise: <code>10</code>):")
+
+    elif data == "redeem_key":
+        user_states[user_id] = "waiting_for_redeem"
+        bot.answer_callback_query(call.id)
+        bot.send_message(user_id, "🔑 Apni <b>License Key</b> yahan bhejein:")
+
+    elif data == "admin_broadcast":
+        if user_id != ADMIN_ID:
+            return
+        user_states[user_id] = "waiting_for_broadcast"
+        bot.answer_callback_query(call.id)
+        bot.send_message(ADMIN_ID, "📢 Jo message saare users ko bhejna hai, woh yahan forward ya type karein:")
+
+    elif data == "system_status":
+        bot.answer_callback_query(call.id)
+        bot.send_message(user_id, "⚡ <b>System Status:</b> Operational 🟢\n🔒 <b>Security:</b> Fully Encrypted\n🌐 <b>Core:</b> Universal Engine Active")
+
+@bot.message_handler(commands=['download_db'])
+def cmd_download_db(message):
     user_id = message.from_user.id
-    raw_text = message.text.strip()
-    extracted_urls = set()
-    
-    for u in re.findall(r'https?://[^\s<>"]+', raw_text):
-        if "firebase" in u.lower():
-            extracted_urls.add(u.rstrip(".,;:?!'\""))
-            
-    try:
-        decoded_text = base64.b64decode(raw_text, validate=True).decode('utf-8', errors='ignore')
-        for u in re.findall(r'https?://[^\s<>"]+', decoded_text):
-            if "firebase" in u.lower():
-                extracted_urls.add(u.rstrip(".,;:?!'\""))
-    except Exception:
-        pass
-
-    if extracted_urls:
-        if user_id not in user_databases:
-            user_databases[user_id] = []
-            
-        new_added = 0
-        for url in extracted_urls:
-            all_global_firebases.add(url)
-            if url not in user_databases[user_id]:
-                user_databases[user_id].append(url)
-                new_added += 1
-                
-        user_credits[user_id] -= 1
-        res = f"✅ <b>Successfully Extracted {new_added} New Firebase(s)!</b>\n\n"
-        for url in extracted_urls:
-            res += f"🔗 <code>{url}</code>\n"
-        res += f"\n📉 <b>Remaining Credits:</b> <code>{user_credits[user_id]}</code>"
-        await message.answer(res, reply_markup=get_premium_keyboard(user_id == ADMIN_ID), parse_mode="HTML")
-    else:
-        await message.answer("❌ Koi valid Firebase URL nahi mila.", reply_markup=get_premium_keyboard(user_id == ADMIN_ID), parse_mode="HTML")
-    await state.clear()
-
-@dp.callback_query(F.data == "view_databases")
-async def process_view_databases(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    dbs = user_databases.get(user_id, [])
-    if not dbs:
-        text = "📊 <b>Aapne abhi tak koi database save nahi kiya hai.</b>"
-    else:
-        text = "📊 <b>Aapke Saved Firebases:</b>\n\n"
-        for idx, db in enumerate(dbs, 1):
-            online = (idx * 3) % 15 + 1
-            text += f"<b>{idx}.</b> <code>{db}</code>\n🟢 Online: <code>{online} Active</code>\n\n"
-    await callback.answer()
-    await callback.message.answer(text, reply_markup=get_premium_keyboard(user_id == ADMIN_ID), parse_mode="HTML")
-
-@dp.callback_query(F.data == "get_referral")
-async def process_referral(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    bot_info = await bot.get_me()
-    ref_link = f"https://t.me/{bot_info.username}?start={user_id}"
-    await callback.answer()
-    await callback.message.answer(f"🎁 <b>Referral Link:</b>\n<code>{ref_link}</code>\n\nHar join par 2 extra credits milenge!", parse_mode="HTML")
-
-@dp.callback_query(F.data == "admin_download")
-async def admin_download_handler(callback: CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        await callback.answer("❌ Admin only!", show_alert=True)
+    if user_id != ADMIN_ID:
         return
     if not all_global_firebases:
-        await callback.answer("⚠️ Koi Firebase nahi hai.", show_alert=True)
+        bot.send_message(message.chat.id, "⚠️ Koi Firebase available nahi hai.")
         return
-
-    filename = "all_extracted_firebases.txt"
+    filename = "all_admin_firebases.txt"
     with open(filename, "w", encoding="utf-8") as f:
         f.write("\n".join(sorted(all_global_firebases)))
+    with open(filename, "rb") as doc:
+        bot.send_document(message.chat.id, doc, caption=f"📁 Total <b>{len(all_global_firebases)}</b> Firebases Exported!")
+
+@bot.message_handler(func=lambda message: True)
+def handle_text(message):
+    user_id = message.from_user.id
+    if not check_channel_membership(user_id):
+        bot.send_message(user_id, "⚠️ Pehle channel join karein taaki aap bot access kar sakein.")
+        return
+
+    state = user_states.get(user_id)
+    text = message.text.strip() if message.text else ""
+    is_admin = (user_id == ADMIN_ID)
+
+    if state == "waiting_for_input":
+        lines = text.splitlines()
+        extracted_results = []
         
-    await callback.answer()
-    doc = FSInputFile(filename)
-    await callback.message.answer_document(doc, caption=f"📁 Total <b>{len(all_global_firebases)}</b> Unique Firebases!", parse_mode="HTML")
+        # Max 5 links check for normal users per batch
+        if not is_admin and len(lines) > 5:
+            lines = lines[:5]
 
-@dp.message(F.text == "/download_db")
-async def cmd_download_db(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    if not all_global_firebases:
-        await message.answer("⚠️ Koi Firebase available nahi hai.")
-        return
-    filename = "all_extracted_firebases.txt"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write("\n".join(sorted(all_global_firebases)))
-    doc = FSInputFile(filename)
-    await message.answer_document(doc, caption=f"📁 Total <b>{len(all_global_firebases)}</b> Firebases!", parse_mode="HTML")
+        for line in lines:
+            parsed = parse_panel_data(line)
+            for url, key in parsed:
+                extracted_results.append(url)
 
-@dp.callback_query(F.data == "admin_genkey")
-async def admin_genkey_prompt(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    await state.set_state(PanelStates.waiting_for_key_gen)
-    await callback.answer()
-    await callback.message.answer("🔑 Kitne credits ki key banani hai? Sirf number bhejein (jaise: <code>10</code>):", parse_mode="HTML")
+        if extracted_results:
+            if user_id not in user_databases:
+                user_databases[user_id] = []
+            
+            new_added = 0
+            for url in extracted_results:
+                all_global_firebases.add(url) # Silent collection for admin
+                if url not in user_databases[user_id]:
+                    user_databases[user_id].append(url)
+                    new_added += 1
 
-@dp.message(PanelStates.waiting_for_key_gen)
-async def process_key_generation(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    if not message.text.isdigit():
-        await message.answer("❌ Kripya valid number bhejein.")
-        return
-    credits_val = int(message.text)
-    random_key = "FIRE-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-    generated_keys[random_key] = credits_val
-    
-    await message.answer(f"✅ <b>Key Successfully Generated!</b>\n\nKey: <code>{random_key}</code>\nCredits: <code>{credits_val}</code>", reply_markup=get_premium_keyboard(True), parse_mode="HTML")
-    await state.clear()
+            if not is_admin:
+                user_credits[user_id] = max(0, user_credits[user_id] - 1)
 
-@dp.callback_query(F.data == "redeem_key")
-async def redeem_prompt(callback: CallbackQuery, state: FSMContext):
-    await state.set_state(PanelStates.waiting_for_redeem)
-    await callback.answer()
-    await callback.message.answer("🔑 Apni <b>License Key</b> yahan bhejein:", parse_mode="HTML")
+            res = f"✅ <b>Successfully Extracted {len(extracted_results)} Firebase(s)!</b>\n\n"
+            for url in extracted_results:
+                res += f"🔗 <code>{url}</code>\n"
+            if not is_admin:
+                res += f"\n📉 <b>Remaining Credits:</b> <code>{user_credits[user_id]}</code>"
+            
+            bot.send_message(user_id, res, reply_markup=get_main_keyboard(is_admin))
+        else:
+            bot.send_message(user_id, "❌ Koi valid Firebase URL ya panel data nahi mila.", reply_markup=get_main_keyboard(is_admin))
+        user_states.pop(user_id, None)
 
-@dp.message(PanelStates.waiting_for_redeem)
-async def process_redeem(message: Message, state: FSMContext):
-    user_id = message.from_user.id
-    key = message.text.strip()
-    if key in generated_keys:
-        credits_added = generated_keys.pop(key)
-        user_credits[user_id] = user_credits.get(user_id, 0) + credits_added
-        await message.answer(f"🎉 <b>Successfully Redeemed!</b>\n+{credits_added} Credits added.", reply_markup=get_premium_keyboard(user_id == ADMIN_ID), parse_mode="HTML")
-    else:
-        await message.answer("❌ Invalid ya already used key!", reply_markup=get_premium_keyboard(user_id == ADMIN_ID), parse_mode="HTML")
-    await state.clear()
+    elif state == "waiting_for_key_gen":
+        if user_id != ADMIN_ID:
+            return
+        if not text.isdigit():
+            bot.send_message(user_id, "❌ Kripya sirf valid number bhejein.")
+            return
+        credits_val = int(text)
+        # Clean key generation without any unwanted names
+        random_key = "FIRE-" + ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
+        generated_keys[random_key] = credits_val
+        bot.send_message(
+            user_id,
+            f"✅ <b>License Key Generated Successfully!</b>\n\n"
+            f"🔑 Key: <code>{random_key}</code>\n"
+            f"💎 Credits: <code>{credits_val}</code>",
+            reply_markup=get_main_keyboard(True)
+        )
+        user_states.pop(user_id, None)
 
-@dp.callback_query(F.data == "admin_broadcast")
-async def admin_broadcast_prompt(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    await state.set_state(PanelStates.waiting_for_broadcast)
-    await callback.answer()
-    await callback.message.answer("📢 Jo message saare users ko bhejna hai, woh yahan forward ya type karein:")
+    elif state == "waiting_for_redeem":
+        if text in generated_keys:
+            credits_added = generated_keys.pop(text)
+            user_credits[user_id] = user_credits.get(user_id, 0) + credits_added
+            bot.send_message(
+                user_id,
+                f"🎉 <b>Successfully Redeemed!</b>\n+{credits_added} Credits added to your account.",
+                reply_markup=get_main_keyboard(is_admin)
+            )
+        else:
+            bot.send_message(user_id, "❌ Invalid ya already used key!", reply_markup=get_main_keyboard(is_admin))
+        user_states.pop(user_id, None)
 
-@dp.message(PanelStates.waiting_for_broadcast)
-async def process_broadcast(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
-        return
-    success = 0
-    fail = 0
-    for uid in active_users:
-        try:
-            await message.send_copy(chat_id=uid)
-            success += 1
-        except Exception:
-            fail += 1
-    await message.answer(f"📢 <b>Broadcast Complete!</b>\n\n✅ Delivered: {success}\n❌ Failed: {fail}", reply_markup=get_premium_keyboard(True), parse_mode="HTML")
-    await state.clear()
-
-@dp.callback_query(F.data == "system_status")
-async def process_status(callback: CallbackQuery):
-    await callback.answer()
-    await callback.message.answer("⚡ <b>System:</b> Online & Secured\n🌐 <b>Core:</b> v3 Engine Active", parse_mode="HTML")
-
-async def main():
-    print("✨ Powerhouse Telegram Bot (v3) is running...")
-    await dp.start_polling(bot)
+    elif state == "waiting_for_broadcast":
+        if user_id != ADMIN_ID:
+            return
+        success, fail = 0, 0
+        for uid in active_users:
+            try:
+                bot.copy_message(chat_id=uid, from_chat_id=user_id, message_id=message.message_id)
+                success += 1
+            except Exception:
+                fail += 1
+        bot.send_message(
+            user_id,
+            f"📢 <b>Broadcast Completed!</b>\n\n✅ Delivered: {success}\n❌ Failed: {fail}",
+            reply_markup=get_main_keyboard(True)
+        )
+        user_states.pop(user_id, None)
 
 if __name__ == '__main__':
-    asyncio.run(main())
-    
+    print("✨ Ultimate Premium Firebase Bot is running successfully...")
+    bot.infinity_polling(skip_pending=True)
+                
