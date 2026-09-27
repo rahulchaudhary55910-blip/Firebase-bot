@@ -132,7 +132,7 @@ def check_firebase_stats(url, key):
     return total, online
 
 # ═══════════════════════════════════════════════════════════════
-#  🔗 ULTIMATE UNIVERSAL PARSER (Catch-All Any Panel/Links)
+#  🔗 ULTIMATE ROBUST ZENITH & PANEL PARSER
 # ═══════════════════════════════════════════════════════════════
 def parse_panel_data(line):
     line = line.strip()
@@ -141,7 +141,7 @@ def parse_panel_data(line):
 
     extracted_entries = []
     try:
-        # 1. Catch all query parameters or base64 blobs dynamically
+        # Extract all potential base64 or encoded segments from parameters
         params = re.findall(r'[?&][a-zA-Z0-9_-]+=([A-Za-z0-9+/=_-]+)', line)
         if not params and len(line) > 15 and not line.startswith("http"):
             params = [line]
@@ -155,25 +155,32 @@ def parse_panel_data(line):
                 try:
                     import json
                     data = json.loads(decoded)
-                    def extract_json_recursive(obj):
+                    
+                    # Recursive function to find urls & keys in any JSON structure (Zenith / Panels)
+                    def dig_json(obj):
                         if isinstance(obj, dict):
-                            p_url = obj.get("url", "") or obj.get("firebase", "") or obj.get("rtdb", "")
-                            p_key = obj.get("key", "dummy") or obj.get("secret", "dummy") or "dummy"
-                            if p_url and isinstance(p_url, str):
-                                p_url = p_url.rstrip('/')
-                                if not p_url.startswith("http"):
-                                    p_url = "https://" + p_url
-                                extracted_entries.append((p_url, str(p_key)))
-                            for val in obj.values():
-                                extract_json_recursive(val)
+                            # Look for common key names for URL and Secret
+                            p_url = obj.get("url") or obj.get("firebase") or obj.get("rtdb") or obj.get("link")
+                            p_key = obj.get("key") or obj.get("secret") or obj.get("auth") or "dummy"
+                            
+                            if p_url and isinstance(p_url, str) and ("firebase" in p_url.lower() or "rtdb" in p_url.lower()):
+                                clean_url = p_url.rstrip('/')
+                                if not clean_url.startswith("http"):
+                                    clean_url = "https://" + clean_url
+                                clean_key = str(p_key) if p_key else "dummy"
+                                extracted_entries.append((clean_url, clean_key))
+                            
+                            for k, v in obj.items():
+                                dig_json(v)
                         elif isinstance(obj, list):
                             for item in obj:
-                                extract_json_recursive(item)
-                    extract_json_recursive(data)
+                                dig_json(item)
+                    
+                    dig_json(data)
                 except:
                     pass
 
-                # Also find any raw URLs inside decoded text
+                # Fallback: scan any direct URLs inside the decoded text
                 sub_urls = re.findall(r'https?://[^\s<>"]+', decoded)
                 for su in sub_urls:
                     if "firebase" in su.lower() or "rtdb" in su.lower():
@@ -182,7 +189,7 @@ def parse_panel_data(line):
             except:
                 pass
 
-        # 2. Check custom ||| format
+        # Check custom ||| format
         if '|||' in line:
             parts = line.split('|||')
             url = parts[0].strip()
@@ -192,7 +199,7 @@ def parse_panel_data(line):
                     url = "https://" + url
                 extracted_entries.append((url, key))
 
-        # 3. Direct general URL scanning
+        # Direct general URL scanning
         general_urls = re.findall(r'https?://[^\s<>"]+', line)
         for u in general_urls:
             if "firebase" in u.lower() or "rtdb" in u.lower():
@@ -324,7 +331,7 @@ def callback_handler(call):
         bot.send_message(
             user_id,
             "📥 <b>SEND PANEL DATA OR LINKS</b>\n\n"
-            "<i>Aap kisi bhi panel ka link, Base64 string, ya direct links bhej sakte hain. Universal parser sabhi se extract kar lega!</i>"
+            "<i>Aap kisi bhi panel ka link (Zenith, EdgeOne, etc.), Base64 string, ya direct links bhej sakte hain.</i>"
         )
 
     elif data == "view_databases":
@@ -563,6 +570,5 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     
-    print("✨ Ultimate Universal Firebase Bot is running successfully...")
+    print("✨ Ultimate Robust Firebase Bot is running successfully...")
     bot.infinity_polling(skip_pending=True)
-   
