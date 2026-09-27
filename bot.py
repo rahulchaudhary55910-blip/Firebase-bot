@@ -10,7 +10,7 @@ from flask import Flask
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-BOT_TOKEN = "8632363521:AAHmUpYvXtViGysiVRkhXiII_2SxcBnorIw"
+BOT_TOKEN = "8632363521:AAGwyB_ALt49ImXEC_SnZIYpGwZ6kIMVZn0"
 ADMIN_CHAT_ID = 6755426755
 CHANNEL_USERNAME = "@trickzone6"
 
