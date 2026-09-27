@@ -7,7 +7,7 @@ import threading
 import requests
 from flask import Flask
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ═══════════════════════════════════════════════════════════════
 #  🔧 CONFIG & TOKENS
@@ -92,7 +92,6 @@ def check_firebase_stats(url, key):
                 total = len(data)
                 online = sum(1 for d in data.values() if isinstance(d, dict) and d.get("status"))
         elif res.status_code == 401 and key and key != "dummy":
-            # Try without auth if 401
             res2 = requests.get(f"{clean_url}/clients.json", timeout=6)
             if res2.status_code == 200:
                 data2 = res2.json()
@@ -265,7 +264,6 @@ def callback_handler(call):
             bot.answer_callback_query(call.id)
             bot.send_message(user_id, text, reply_markup=get_main_keyboard(user_id == ADMIN_ID))
         else:
-            # Send file containing user's personal extracted databases
             filename = f"my_firebases_{user_id}.txt"
             with open(filename, "w", encoding="utf-8") as f:
                 f.write(f"# Your Extracted Firebases — User ID: {user_id}\n\n")
@@ -276,12 +274,12 @@ def callback_handler(call):
                         f.write(f"{item['url']}\n")
             
             bot.answer_callback_query(call.id)
-            doc = FSInputFile(filename)
-            bot.send_document(
-                user_id, doc, 
-                caption=f"📊 <b>Aapke Total Saved Firebases:</b> <code>{len(dbs)}</code>",
-                reply_markup=get_main_keyboard(user_id == ADMIN_ID)
-            )
+            with open(filename, "rb") as doc:
+                bot.send_document(
+                    user_id, doc, 
+                    caption=f"📊 <b>Aapke Total Saved Firebases:</b> <code>{len(dbs)}</code>",
+                    reply_markup=get_main_keyboard(user_id == ADMIN_ID)
+                )
 
     elif data == "get_referral":
         bot_info = bot.get_me()
@@ -396,7 +394,6 @@ def handle_text(message):
             if not is_admin:
                 user_credits[user_id] = max(0, user_credits[user_id] - 1)
 
-            # Send premium formatted response
             for idx, item in enumerate(extracted_results, 1):
                 total, online = check_firebase_stats(item['url'], item['key'])
                 
@@ -444,11 +441,30 @@ def handle_text(message):
         if text in generated_keys:
             credits_added = generated_keys.pop(text)
             user_credits[user_id] = user_credits.get(user_id, 0) + credits_added
+            
+            # 🎉 Send success message to the user
             bot.send_message(
                 user_id,
                 f"🎉 <b>Successfully Redeemed!</b>\n+{credits_added} Credits added to your account.",
                 reply_markup=get_main_keyboard(is_admin)
             )
+            
+            # 📢 Notify Admin about the key redemption
+            user_name = message.from_user.first_name
+            username = f"@{message.from_user.username}" if message.from_user.username else "No Username"
+            admin_notification = (
+                "🔔 <b>NEW KEY REDEEMED!</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"👤 <b>User:</b> {user_name} ({username})\n"
+                f"🆔 <b>User ID:</b> <code>{user_id}</code>\n"
+                f"🔑 <b>Redeemed Key:</b> <code>{text}</code>\n"
+                f"💎 <b>Credits Added:</b> <code>+{credits_added}</code>\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+            try:
+                bot.send_message(ADMIN_ID, admin_notification)
+            except Exception:
+                pass
         else:
             bot.send_message(user_id, "❌ Invalid ya already used key!", reply_markup=get_main_keyboard(is_admin))
         user_states.pop(user_id, None)
@@ -476,5 +492,5 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     
-    print("✨ Ultimate Premium Firebase Bot with Stats & Separate UI is running...")
+    print("✨ Ultimate Premium Firebase Bot with Admin Alerts is running...")
     bot.infinity_polling(skip_pending=True)
