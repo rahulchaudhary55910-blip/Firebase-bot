@@ -13,7 +13,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ═══════════════════════════════════════════════════════════════
 #  🔧 CONFIG & TOKENS
 # ═══════════════════════════════════════════════════════════════
-BOT_TOKEN = "8632363521:AAHW1jecWgc103lm6cBEKxMHpSKYVrKgASA" # Apna naya token yahan rakhein
+BOT_TOKEN = "8632363521:AAEwn-zBC_AhsiDoic_hxLNP0RcuzArQR5I" # Apna naya token yahan rakhein
 CHANNEL_USERNAME = "@trickzone6"  # Official Channel Username
 ADMIN_ID = 6755426755  # Aapki Admin ID
 
