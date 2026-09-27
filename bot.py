@@ -3,6 +3,7 @@ import re
 import json
 import random
 import string
+import base64
 import requests
 import threading
 from datetime import datetime, timedelta
@@ -99,6 +100,7 @@ def parse_links_bulk(text):
         if not line or line.startswith("#"):
             continue
         
+        # Decode base64 parameters from panel links (Zenith, EdgeOne, etc.)
         param_matches = re.findall(r'[?&][a-zA-Z0-9_-]+=([A-Za-z0-9+/=_-]+)', line)
         decoded_texts = [line]
         for match in param_matches:
@@ -113,20 +115,22 @@ def parse_links_bulk(text):
 
         found_any = False
         for text_block in decoded_texts:
+            # 1. Deep JSON Scan for nested URLs and keys
             try:
                 data = json.loads(text_block)
                 def dig_json(obj):
                     nonlocal found_any
                     if isinstance(obj, dict):
-                        p_url = obj.get('url', '') or obj.get('firebase', '') or obj.get('rtdb', '')
-                        p_key = obj.get('key', 'dummy') or obj.get('secret', 'dummy') or "dummy"
+                        p_url = obj.get('url', '') or obj.get('firebase', '') or obj.get('rtdb', '') or obj.get('link', '')
+                        p_key = obj.get('key', 'dummy') or obj.get('secret', 'dummy') or obj.get('auth', 'dummy') or "dummy"
                         if p_url and isinstance(p_url, str):
                             clean_url = p_url.rstrip('/')
                             if not clean_url.startswith("http"):
                                 clean_url = "https://" + clean_url
-                            if (clean_url, str(p_key)) not in [(x[0], x[1]) for x in parsed_results]:
-                                parsed_results.append((clean_url, str(p_key)))
-                                found_any = True
+                            if "firebase" in clean_url.lower() or "rtdb" in clean_url.lower():
+                                if (clean_url, str(p_key)) not in [(x[0], x[1]) for x in parsed_results]:
+                                    parsed_results.append((clean_url, str(p_key)))
+                                    found_any = True
                         for val in obj.values():
                             dig_json(val)
                     elif isinstance(obj, list):
@@ -138,6 +142,7 @@ def parse_links_bulk(text):
             except:
                 pass
 
+            # 2. Regex search for Firebase URLs inside text blocks
             urls = re.findall(r'https?://[a-zA-Z0-9.-]+\.firebaseio\.com|https?://[a-zA-Z0-9.-]+\.firebasedatabase\.app', text_block)
             for u in urls:
                 u_clean = u.rstrip('/')
@@ -148,6 +153,7 @@ def parse_links_bulk(text):
         if found_any:
             continue
 
+        # 3. Custom separator || format
         if '||' in line:
             parts = re.split(r'\|{2,}', line)
             url = parts[0].strip().rstrip('/')
@@ -159,10 +165,12 @@ def parse_links_bulk(text):
                     parsed_results.append((url, key))
                 continue
 
+        # 4. Direct plain URL fallback
         if "firebaseio.com" in line or "firebasedatabase.app" in line or line.startswith("http"):
             url = line.strip().rstrip('/')
-            if (url, "dummy") not in [(x[0], x[1]) for x in parsed_results]:
-                parsed_results.append((url, "dummy"))
+            if "firebase" in url.lower() or "rtdb" in url.lower():
+                if (url, "dummy") not in [(x[0], x[1]) for x in parsed_results]:
+                    parsed_results.append((url, "dummy"))
 
     return parsed_results
 
@@ -229,7 +237,7 @@ def cmd_start(message):
                     update_user_data(user_id, u_data)
                     
                     try:
-                        bot.send_message(ref_id, "🎁 <b>New Verified Referral!</b>\n\nAapke link se ek naye user ne join kiya hai.\n🎁 <b>+10 Credits</b> added to your account!")
+                        bot.send_message(int(ref_id), "🎁 <b>New Verified Referral!</b>\n\nAapke link se ek naye user ne join kiya hai.\n🎁 <b>+10 Credits</b> added to your account!")
                     except:
                         pass
         except:
@@ -239,9 +247,9 @@ def cmd_start(message):
         if not check_channel(user_id):
             ref_id = u_data.get("referred_by")
             if ref_id:
-                ref_data = get_user_data(ref_id)
+                ref_data = get_user_data(int(ref_id))
                 ref_data["credits"] = max(0, ref_data.get("credits", 0) - 10)
-                update_user_data(ref_id, ref_data)
+                update_user_data(int(ref_id), ref_data)
                 try:
                     bot.send_message(int(ref_id), "⚠️ <b>Referral Alert!</b>\n\nAapke ek referred user ne channel leave kar diya hai, isliye aapke <b>10 credits</b> minus ho gaye hain!")
                 except:
@@ -288,9 +296,9 @@ def callback_handler(call):
             bot.answer_callback_query(call.id, "✅ Verification Successful!")
             if u_data.get("referred_by") and not u_data.get("ref_rewarded"):
                 ref_id = u_data["referred_by"]
-                ref_data = get_user_data(ref_id)
+                ref_data = get_user_data(int(ref_id))
                 ref_data["credits"] = ref_data.get("credits", 0) + 10
-                update_user_data(ref_id, ref_data)
+                update_user_data(int(ref_id), ref_data)
                 u_data["ref_rewarded"] = True
                 u_data["left_channel_penalty"] = False
                 update_user_data(user_id, u_data)
@@ -339,7 +347,7 @@ def callback_handler(call):
         bot.send_message(
             user_id,
             "📥 <b>SEND PANEL DATA OR LINKS</b>\n\n"
-            "<i>Aap kisi bhi panel ka link, Base64 string, ya direct links bhej sakte hain.</i>"
+            "<i>Aap kisi bhi panel ka link (Zenith, EdgeOne, etc.), Base64 string, ya direct links bhej sakte hain.</i>"
         )
         bot.register_next_step_handler_by_chat_id(user_id, process_extraction)
 
