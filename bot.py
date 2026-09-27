@@ -13,7 +13,7 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 # ═══════════════════════════════════════════════════════════════
 #  🔧 CONFIG & TOKENS
 # ═══════════════════════════════════════════════════════════════
-BOT_TOKEN = "8632363521:AAHW1jecWgc103lm6cBEKxMHpSKYVrKgASA"
+BOT_TOKEN = "8632363521:AAHmUpYvXtViGysiVRkhXiII_2SxcBnorIw" # Apna naya token yahan rakhein
 CHANNEL_USERNAME = "@trickzone6"  # Official Channel Username
 ADMIN_ID = 6755426755  # Aapki Admin ID
 
@@ -23,7 +23,7 @@ bot = telebot.TeleBot(BOT_TOKEN, parse_mode='HTML')
 user_databases = {}          # user_id -> [{'url': ..., 'key': ...}]
 all_global_firebases = set() # Saare global firebases ka collection
 user_credits = {}            # user_id -> credits balance
-user_subscriptions = {}      # user_id -> expiry datetime datetime object
+user_subscriptions = {}      # user_id -> expiry datetime object
 referred_users = {}          # user_id -> set of user_ids they referred
 user_referrer = {}           # user_id -> who referred them
 generated_keys = {}          # key -> credit amount
@@ -80,12 +80,10 @@ def check_channel_membership(user_id):
     return False
 
 def verify_and_update_referrals(user_id):
-    """Check if referred users are still in the channel. If left, deduct points."""
     if user_id in referred_users:
         current_refs = list(referred_users[user_id])
         for ref_id in current_refs:
             if not check_channel_membership(ref_id):
-                # User left the channel! Deduct points from referrer
                 referred_users[user_id].remove(ref_id)
                 user_credits[user_id] = max(0, user_credits.get(user_id, 0) - 10)
                 try:
@@ -134,7 +132,7 @@ def check_firebase_stats(url, key):
     return total, online
 
 # ═══════════════════════════════════════════════════════════════
-#  🔗 ADVANCED CLEAN PARSER FOR URL & KEY
+#  🔗 ULTIMATE UNIVERSAL PARSER (Catch-All Any Panel/Links)
 # ═══════════════════════════════════════════════════════════════
 def parse_panel_data(line):
     line = line.strip()
@@ -143,54 +141,48 @@ def parse_panel_data(line):
 
     extracted_entries = []
     try:
-        if "?" in line or "=" in line:
-            params = re.findall(r'[?&](?:share|s|m|data|payload)=([A-Za-z0-9+/=_-]+)', line)
-            if not params and len(line) > 20 and not line.startswith("http"):
-                params = [line]
+        # 1. Catch all query parameters or base64 blobs dynamically
+        params = re.findall(r'[?&][a-zA-Z0-9_-]+=([A-Za-z0-9+/=_-]+)', line)
+        if not params and len(line) > 15 and not line.startswith("http"):
+            params = [line]
 
-            for raw_param in params:
+        for raw_param in params:
+            try:
+                raw = raw_param.replace('-', '+').replace('_', '/')
+                raw += '=' * (-len(raw) % 4)
+                decoded = base64.b64decode(raw).decode('utf-8', errors='ignore')
+                
                 try:
-                    raw = raw_param.replace('-', '+').replace('_', '/')
-                    raw += '=' * (-len(raw) % 4)
-                    decoded = base64.b64decode(raw).decode('utf-8', errors='ignore')
-                    
-                    try:
-                        import json
-                        data = json.loads(decoded)
-                        if isinstance(data, dict) and "panels" in data:
-                            for panel in data["panels"]:
-                                if isinstance(panel, dict):
-                                    p_url = panel.get("url", "").rstrip('/')
-                                    p_key = panel.get("key", "dummy") or "dummy"
-                                    if p_url:
-                                        if not p_url.startswith("http"):
-                                            p_url = "https://" + p_url
-                                        extracted_entries.append((p_url, p_key))
-                        elif isinstance(data, list):
-                            for item in data:
-                                if isinstance(item, dict):
-                                    p_url = item.get("url", "").rstrip('/')
-                                    p_key = item.get("key", "dummy") or "dummy"
-                                    if p_url:
-                                        if not p_url.startswith("http"):
-                                            p_url = "https://" + p_url
-                                        extracted_entries.append((p_url, p_key))
-                        elif isinstance(data, dict) and "url" in data:
-                            p_url = data.get('url', '').rstrip('/')
-                            p_key = data.get('key', 'dummy') or "dummy"
-                            if p_url:
+                    import json
+                    data = json.loads(decoded)
+                    def extract_json_recursive(obj):
+                        if isinstance(obj, dict):
+                            p_url = obj.get("url", "") or obj.get("firebase", "") or obj.get("rtdb", "")
+                            p_key = obj.get("key", "dummy") or obj.get("secret", "dummy") or "dummy"
+                            if p_url and isinstance(p_url, str):
+                                p_url = p_url.rstrip('/')
                                 if not p_url.startswith("http"):
                                     p_url = "https://" + p_url
-                                extracted_entries.append((p_url, p_key))
-                    except:
-                        sub_urls = re.findall(r'https?://[^\s<>"]+', decoded)
-                        for su in sub_urls:
-                            if "firebase" in su.lower() or "rtdb" in su.lower():
-                                clean_su = su.split('|||')[0].rstrip(".,;:?!'\"")
-                                extracted_entries.append((clean_su, "dummy"))
+                                extracted_entries.append((p_url, str(p_key)))
+                            for val in obj.values():
+                                extract_json_recursive(val)
+                        elif isinstance(obj, list):
+                            for item in obj:
+                                extract_json_recursive(item)
+                    extract_json_recursive(data)
                 except:
                     pass
 
+                # Also find any raw URLs inside decoded text
+                sub_urls = re.findall(r'https?://[^\s<>"]+', decoded)
+                for su in sub_urls:
+                    if "firebase" in su.lower() or "rtdb" in su.lower():
+                        clean_su = su.split('|||')[0].rstrip(".,;:?!'\"")
+                        extracted_entries.append((clean_su, "dummy"))
+            except:
+                pass
+
+        # 2. Check custom ||| format
         if '|||' in line:
             parts = line.split('|||')
             url = parts[0].strip()
@@ -200,6 +192,7 @@ def parse_panel_data(line):
                     url = "https://" + url
                 extracted_entries.append((url, key))
 
+        # 3. Direct general URL scanning
         general_urls = re.findall(r'https?://[^\s<>"]+', line)
         for u in general_urls:
             if "firebase" in u.lower() or "rtdb" in u.lower():
@@ -227,13 +220,11 @@ def cmd_start(message):
     text_args = message.text.split()
     
     if user_id not in user_credits:
-        user_credits[user_id] = 0  # Start with 0 credits
+        user_credits[user_id] = 0
 
-    # Handle Referral System via Start Arguments
     if len(text_args) > 1 and text_args[1].isdigit():
         ref_id = int(text_args[1])
         if ref_id != user_id and user_id not in user_referrer:
-            # Check if new user has joined the channel
             if check_channel_membership(user_id):
                 user_referrer[user_id] = ref_id
                 if ref_id not in referred_users:
@@ -251,7 +242,6 @@ def cmd_start(message):
                     except:
                         pass
 
-    # Run check to verify if previously referred users left the channel
     verify_and_update_referrals(user_id)
 
     if not check_channel_membership(user_id):
@@ -303,7 +293,6 @@ def callback_handler(call):
             bot.answer_callback_query(call.id, "❌ Aapke paas kam se kam 10 credits hone chahiye! Refer karke ya key redeem karke credits earn karein.", show_alert=True)
             return
 
-        # Deduct 10 credits and give 3 days subscription
         user_credits[user_id] -= 10
         if user_id in user_subscriptions and datetime.datetime.now() < user_subscriptions[user_id]:
             user_subscriptions[user_id] += datetime.timedelta(days=3)
@@ -335,7 +324,7 @@ def callback_handler(call):
         bot.send_message(
             user_id,
             "📥 <b>SEND PANEL DATA OR LINKS</b>\n\n"
-            "<i>Aap Base64 encoded string, ?s=, ?m= formats, web panel text, ya direct links bhej sakte hain.</i>"
+            "<i>Aap kisi bhi panel ka link, Base64 string, ya direct links bhej sakte hain. Universal parser sabhi se extract kar lega!</i>"
         )
 
     elif data == "view_databases":
@@ -574,5 +563,6 @@ if __name__ == '__main__':
     t.daemon = True
     t.start()
     
-    print("✨ Ultimate Premium Firebase Bot with Strict Subscription & Referrals is running...")
+    print("✨ Ultimate Universal Firebase Bot is running successfully...")
     bot.infinity_polling(skip_pending=True)
+   
