@@ -66,16 +66,23 @@ def process_and_send(chat_id, text_content, batch_size=9):
 
         batches = [lines[i:i + batch_size] for i in range(0, len(lines), batch_size)]
 
-        response = f"<b>✅ Total Cards:</b> {len(lines)} | <b>Per Batch:</b> {batch_size}\n<b>📦 Total Batches:</b> {len(batches)}\n\n"
+        header = f"<b>✅ Total Cards:</b> {len(lines)} | <b>Per Batch:</b> {batch_size}\n<b>📦 Total Batches:</b> {len(batches)}\n\n"
+        
+        current_msg = header
         for idx, batch in enumerate(batches, 1):
             safe_batch_text = html.escape("\n".join(batch))
-            response += f"<b>Batch {idx}:</b>\n<pre>{safe_batch_text}</pre>\n\n"
-
-        if len(response) > 4000:
-            for i in range(0, len(response), 4000):
-                bot.send_message(chat_id, response[i:i+4000], parse_mode="HTML")
-        else:
-            bot.send_message(chat_id, response, parse_mode="HTML")
+            batch_str = f"<b>Batch {idx}:</b>\n<pre>{safe_batch_text}</pre>\n\n"
+            
+            # Agar message 3500 characters se bada hone lage, toh naya message bhej do taaki limit cross na ho
+            if len(current_msg) + len(batch_str) > 3500:
+                bot.send_message(chat_id, current_msg, parse_mode="HTML")
+                current_msg = batch_str
+            else:
+                current_msg += batch_str
+                
+        if current_msg:
+            bot.send_message(chat_id, current_msg, parse_mode="HTML")
+            
     except Exception as e:
         bot.send_message(chat_id, f"❌ Error: <code>{str(e)}</code>", parse_mode="HTML")
 
