@@ -1,5 +1,6 @@
 import os
 import telebot
+import html
 import json as _json
 import time
 
@@ -67,7 +68,8 @@ def process_and_send(chat_id, text_content, batch_size=9):
 
         response = f"<b>✅ Total Cards:</b> {len(lines)} | <b>Per Batch:</b> {batch_size}\n<b>📦 Total Batches:</b> {len(batches)}\n\n"
         for idx, batch in enumerate(batches, 1):
-            response += f"<b>Batch {idx}:</b>\n<pre>" + "\n".join(batch) + "</pre>\n\n"
+            safe_batch_text = html.escape("\n".join(batch))
+            response += f"<b>Batch {idx}:</b>\n<pre>{safe_batch_text}</pre>\n\n"
 
         if len(response) > 4000:
             for i in range(0, len(response), 4000):
