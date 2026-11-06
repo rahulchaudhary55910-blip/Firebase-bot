@@ -31,7 +31,7 @@ PROFILES = [
 SCREENS = [{"h":1080,"w":1920,"depth":24},{"h":900,"w":1440,"depth":30}]
 LANGS = ["en-US,en;q=0.9","en-GB,en;q=0.9,en-US;q=0.8","en-IN,en;q=0.9,en-US;q=0.8"]
 
-TG_BOT_TOKEN = "8560648471:AAFpnSAaFraYuS42_6DbRrKi1kjXkAOZGtw"
+TG_BOT_TOKEN = "9040723839:AAEIRfrWdw5YGLZfVQn_qjGJZM2LebDOcq4"
 ADMIN_CHAT_ID = 6755426755  # Aapki ID jahan sare logs aur hits aayenge
 
 bot = telebot.TeleBot(TG_BOT_TOKEN)
