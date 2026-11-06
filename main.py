@@ -1,7 +1,5 @@
 import os
 import telebot
-from flask import Flask
-import threading
 import json as _json
 import time
 
@@ -31,17 +29,6 @@ def save_user(user_id):
         users.add(user_id)
         data["users"] = list(users)
         save_json(USERS_FILE, data)
-
-# --- KEEP-ALIVE FLASK SERVER FOR RENDER ---
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Card Splitter Bot with Broadcast is Alive and Running!"
-
-def run_flask():
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
 
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
@@ -94,7 +81,6 @@ def process_and_send(chat_id, text_content, batch_size=9):
 def split_cards(message):
     save_user(message.from_user.id)
     try:
-        # Case 1: Reply to a document file with "/split 5"
         if message.reply_to_message and message.reply_to_message.document:
             parts = message.text.split()
             batch_size = 9
@@ -109,7 +95,6 @@ def split_cards(message):
             process_and_send(message.chat.id, file_content, batch_size)
             return
 
-        # Case 2: Direct text split
         parts = message.text.split("\n", 1)
         first_line = parts[0].replace("/split", "").strip()
         
@@ -186,10 +171,6 @@ def cmd_broadcast(message):
     bot.edit_message_text(f"✅ <b>Broadcast Completed!</b>\n\nSuccessful: {success}\nFailed: {fail}", chat_id=status_msg.chat.id, message_id=status_msg.message_id, parse_mode="HTML")
 
 if __name__ == "__main__":
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
-    
-    print("🤖 Card Splitter Bot with Broadcast & File Support is running...")
+    print("🤖 Card Splitter Bot Worker is running...")
     bot.infinity_polling()
     
